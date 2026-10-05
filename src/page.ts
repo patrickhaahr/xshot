@@ -19,6 +19,9 @@ const FOCAL_POST_LIMIT_MS = 15_000
 /** The longest wait for the Target's images to load before measuring anyway. */
 const IMAGES_LIMIT_MS = 5000
 
+/** The longest wait for Truncated text to expand before capturing it as a Partial Capture. */
+const EXPAND_LIMIT_MS = 5000
+
 /** Whether Pick mode or its Capture is under way; a second Pick mode would put its highlight in the Capture. */
 let busy = false
 
@@ -209,17 +212,43 @@ async function requestCapture(request: WorkerRequest): Promise<CaptureResponse> 
 
 /**
  * Measure a Post Capture on the Post's status page, once X has rendered the Focal post and the
- * images of its Conversation. X renders the page after it loads, so the Focal post can appear
- * seconds later; the Posts above it arrive with it.
+ * images of its Conversation and the Truncated text is expanded. X renders the page after it
+ * loads, so the Focal post can appear seconds later; the Posts above it arrive with it.
  */
 async function measurePostWhenRendered(
   command: Extract<PageCommand, { readonly type: "measure-post" }>
 ): Promise<Measurement> {
+  const input = { start: command.start, destination: command.destination }
   const focal = await rendered(() => focalPost(document), FOCAL_POST_LIMIT_MS)
 
-  if (focal !== null) await Promise.all(conversationOf(focal).map(imagesLoaded))
+  if (focal !== null) {
+    await Promise.all(conversationOf(focal).map(imagesLoaded))
+    await expandTruncatedText(input)
+  }
 
-  return measureWhenSettled({ start: command.start, destination: command.destination })
+  // Planned again: Truncated text that didn't expand is still listed and makes a Partial Capture.
+  return measureWhenSettled(input)
+}
+
+/**
+ * Click the "Show more" controls the plan lists. X expands the text in place and removes the
+ * control, so this waits until every control is gone, or gives up after a limit.
+ */
+async function expandTruncatedText(input: {
+  readonly start: CaptureStart
+  readonly destination: Destination
+}): Promise<void> {
+  const planned = planHere(input)
+
+  if (planned._tag === "err") return
+
+  const controls = planned.value.expand
+
+  for (const control of controls) {
+    if (control instanceof HTMLElement) control.click()
+  }
+
+  await observedUntil(() => controls.every((control) => !control.isConnected), EXPAND_LIMIT_MS)
 }
 
 async function measureWhenSettled(input: {
@@ -228,17 +257,7 @@ async function measureWhenSettled(input: {
 }): Promise<Measurement> {
   await viewportSettled()
 
-  const planned = planCapture({
-    page: document,
-    start: input.start,
-    destination: input.destination,
-    url: new URL(window.location.href),
-    now: new Date(),
-    layout: {
-      boundsOf: (element) => element.getBoundingClientRect(),
-      scroll: { x: window.scrollX, y: window.scrollY },
-    },
-  })
+  const planned = planHere(input)
 
   if (planned._tag === "err") return { _tag: "refused", refusal: planned.error }
 
@@ -253,29 +272,51 @@ async function measureWhenSettled(input: {
   }
 }
 
+/** Plan a Capture of this page as it is laid out now. */
+function planHere(input: {
+  readonly start: CaptureStart
+  readonly destination: Destination
+}): ReturnType<typeof planCapture> {
+  return planCapture({
+    page: document,
+    start: input.start,
+    destination: input.destination,
+    url: new URL(window.location.href),
+    now: new Date(),
+    layout: {
+      boundsOf: (element) => element.getBoundingClientRect(),
+      scroll: { x: window.scrollX, y: window.scrollY },
+    },
+  })
+}
+
 /**
  * Resolve with the element `find` returns once the page has rendered it, or with null after a
- * limit. Watches the DOM rather than polling on a timer, because timers in a background tab
- * are throttled.
+ * limit.
  */
-function rendered(find: () => Element | null, limitMs: number): Promise<Element | null> {
+async function rendered(find: () => Element | null, limitMs: number): Promise<Element | null> {
+  await observedUntil(() => find() !== null, limitMs)
+
+  return find()
+}
+
+/**
+ * Resolve once `done` holds after a change to the page, or after a limit. Watches the DOM
+ * rather than polling on a timer, because timers in a background tab are throttled.
+ */
+function observedUntil(done: () => boolean, limitMs: number): Promise<void> {
   return new Promise((resolve) => {
     const observer = new MutationObserver(check)
-
-    const limit = setTimeout(() => {
-      settle(null)
-    }, limitMs)
+    const limit = setTimeout(settle, limitMs)
 
     function check(): void {
-      const found = find()
-
-      if (found !== null) settle(found)
+      if (done()) settle()
     }
 
-    function settle(found: Element | null): void {
+    function settle(): void {
       clearTimeout(limit)
       observer.disconnect()
-      resolve(found)
+      resolve()
     }
 
     observer.observe(document, { childList: true, subtree: true })

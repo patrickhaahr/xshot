@@ -103,6 +103,47 @@ export function isPlaceholder(item: Element): boolean {
 }
 
 /**
+ * X's "Show more" control at the end of a Truncated Post's text. It is a button that expands
+ * the text in place and then disappears. Quoted posts never have one.
+ */
+const SHOW_MORE = '[data-testid="tweet-text-show-more-link"]'
+
+/**
+ * The "Show more" controls of the Truncated Posts among the given ones.
+ *
+ * @param posts - Posts, such as a Conversation; placeholders have no text to expand.
+ * @returns The controls in page order.
+ */
+export function showMoreIn(posts: ReadonlyArray<Element>): Element[] {
+  return posts.flatMap((post) => [...post.querySelectorAll(SHOW_MORE)])
+}
+
+/**
+ * A quoted post's text. A quoted post is a link card inside the Post that quotes it, with its
+ * own author name; the Post's own text is outside the card.
+ */
+const QUOTED_POST_TEXT = 'div[role="link"]:has([data-testid="User-Name"]) [data-testid="tweetText"]'
+
+/**
+ * The shortest quoted post text that is taken as cut off. X shows only about the
+ * first 280 characters of a quoted post, with no "Show more" and no ellipsis: cut-off texts
+ * ran 275 to 279 characters in saved pages, complete ones at most 217.
+ */
+const QUOTED_POST_SHOWN_LENGTH = 260
+
+/**
+ * The quoted posts X has cut off in the given Posts. Their text can't be expanded.
+ *
+ * @param posts - Posts, such as a Conversation.
+ * @returns The cut-off quoted posts' texts in page order.
+ */
+export function cutOffQuotedPostsIn(posts: ReadonlyArray<Element>): Element[] {
+  return posts
+    .flatMap((post) => [...post.querySelectorAll(QUOTED_POST_TEXT)])
+    .filter((text) => (text.textContent ?? "").length >= QUOTED_POST_SHOWN_LENGTH)
+}
+
+/**
  * Which Post a Post element shows, read from its permalink. In a repost, that is the original
  * Post, not the repost.
  *

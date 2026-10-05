@@ -92,8 +92,12 @@ function warningMessage(partial: CaptureWarning): string {
       return partial.count === 1
         ? "Partial Capture: 1 Post in the Conversation is unavailable."
         : `Partial Capture: ${partial.count} Posts in the Conversation are unavailable.`
+    case "not-expanded":
+      return 'Partial Capture: some "Show more" text couldn\'t be expanded.'
+    case "quoted-post-cut-off":
+      return "Partial Capture: X shows only the start of a quoted post."
     default:
-      return casesHandled(partial._tag)
+      return casesHandled(partial)
   }
 }
 
