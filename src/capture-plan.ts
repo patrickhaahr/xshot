@@ -16,6 +16,15 @@ export type CaptureStart = {
   readonly element: Element
 }
 
+/** Where the user asked for the Capture to go. */
+export type Destination = "clipboard" | "download"
+
+/** Where a finished Capture is delivered, with what a Download needs. */
+export type DestinationPlan =
+  | { readonly _tag: "clipboard" }
+  /** A PNG file in the downloads folder, saved under `filename`. */
+  | { readonly _tag: "download"; readonly filename: string }
+
 /**
  * The page layout the plan reads. The browser measures it; a test provides it, because
  * happy-dom does no layout.
@@ -39,6 +48,9 @@ export type CapturePlan = {
    * rounds only when it produces the image.
    */
   readonly crop: Rect
+
+  /** Where the Capture is delivered. */
+  readonly destination: DestinationPlan
 }
 
 /** Why no Capture is taken. */
@@ -58,11 +70,19 @@ const MAX_IMAGE_HEIGHT = 16_384
 /**
  * Decide what a Capture shows and which part of the page to crop, or why there is no Capture.
  *
- * @param input - How the Capture was started and the page layout to measure it in.
+ * @param input - How the Capture was started, where it goes, the page's address, the current
+ *   time and the page layout to measure it in.
  * @returns The plan for the Capture, or the reason it is refused.
  */
 export function planCapture(input: {
   readonly start: CaptureStart
+  readonly destination: Destination
+
+  /** The address of the page being captured. */
+  readonly url: URL
+
+  /** When the Capture was taken; a Download's filename gives it in local time. */
+  readonly now: Date
   readonly layout: Layout
 }): Result<CapturePlan, CaptureRefusal> {
   const { start, layout } = input
@@ -79,5 +99,38 @@ export function planCapture(input: {
       width: bounds.width,
       height: bounds.height,
     },
+    destination: planDestination(input),
   })
+}
+
+function planDestination(input: {
+  readonly destination: Destination
+  readonly url: URL
+  readonly now: Date
+}): DestinationPlan {
+  switch (input.destination) {
+    case "clipboard":
+      return { _tag: "clipboard" }
+    case "download":
+      return { _tag: "download", filename: `xshot-${site(input.url)}-${timestamp(input.now)}.png` }
+  }
+}
+
+/** The page's host name without a leading "www.", or "page" for an address without one. */
+function site(url: URL): string {
+  const host = url.hostname.replace(/^www\./, "")
+
+  return host === "" ? "page" : host
+}
+
+/** The local date and time as `YYYYMMDD-HHMMSS`, which sorts by time and is safe in filenames. */
+function timestamp(now: Date): string {
+  const date = [now.getFullYear(), now.getMonth() + 1, now.getDate()].map(twoDigits).join("")
+  const time = [now.getHours(), now.getMinutes(), now.getSeconds()].map(twoDigits).join("")
+
+  return `${date}-${time}`
+}
+
+function twoDigits(value: number): string {
+  return String(value).padStart(2, "0")
 }

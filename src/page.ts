@@ -1,7 +1,8 @@
 import { planCapture } from "./capture-plan"
-import { dismissConfirmation, showConfirmation, showRefusal } from "./confirmation"
+import { dismissConfirmation, showConfirmation, showFailure, showRefusal } from "./confirmation"
 import type { CaptureResponse, Measurement, PageCommand, WorkerRequest } from "./messages"
 import { pick } from "./pick-mode"
+import type { Picked } from "./pick-mode"
 import { attempt } from "./prelude"
 
 /** How long the viewport must go without resizing before the Target is measured. */
@@ -43,9 +44,18 @@ async function pickThenCapture(): Promise<void> {
 
   if (picked._tag === "cancelled") return
 
+  switch (picked.destination) {
+    case "clipboard":
+      return copyToClipboard(picked)
+    case "download":
+      return saveDownload(picked)
+  }
+}
+
+async function copyToClipboard(picked: Picked): Promise<void> {
   // The write starts right away, while the choosing click still counts as user activation and
   // the page has focus; the Clipboard takes the image once the worker has captured it.
-  const response = capture(picked.target)
+  const response = capture(picked)
   const png = response.then(pngOf)
 
   const written = await attempt(
@@ -54,26 +64,35 @@ async function pickThenCapture(): Promise<void> {
 
   const captured = await response
 
+  // A refused or failed Capture also fails the write, so its own reason is the one worth showing.
   switch (captured._tag) {
     case "refused":
-      showRefusal(captured.refusal)
-
-      return
+      return showRefusal(captured.refusal)
     case "failed":
-      console.error(`XShot: ${captured.reason}`)
-
-      return
+      return showFailure(captured.reason)
     case "captured":
       break
   }
 
   if (written._tag === "err") {
-    console.error(`XShot: ${written.error.message}`)
-
-    return
+    return showFailure(`Couldn't copy to the Clipboard: ${written.error.message}`)
   }
 
   await showConfirmation(await png, "Copied to Clipboard")
+}
+
+async function saveDownload(picked: Picked): Promise<void> {
+  // The worker saves the Download before it answers.
+  const captured = await capture(picked)
+
+  switch (captured._tag) {
+    case "refused":
+      return showRefusal(captured.refusal)
+    case "failed":
+      return showFailure(captured.reason)
+    case "captured":
+      return showConfirmation(pngFromBase64(captured.pngBase64), "Saved to Downloads")
+  }
 }
 
 /**
@@ -87,7 +106,7 @@ function pngOf(response: CaptureResponse): Blob {
 }
 
 /** Ask the worker to capture the Target, measuring it when the worker is ready. */
-async function capture(target: Element): Promise<CaptureResponse> {
+async function capture(picked: Picked): Promise<CaptureResponse> {
   function answerMeasure(
     command: PageCommand,
     _sender: chrome.runtime.MessageSender,
@@ -95,7 +114,7 @@ async function capture(target: Element): Promise<CaptureResponse> {
   ): boolean {
     if (command.type !== "measure") return false
 
-    void measureWhenSettled(target).then(sendResponse)
+    void measureWhenSettled(picked).then(sendResponse)
 
     return true
   }
@@ -115,11 +134,14 @@ async function capture(target: Element): Promise<CaptureResponse> {
   return response.value
 }
 
-async function measureWhenSettled(target: Element): Promise<Measurement> {
+async function measureWhenSettled(picked: Picked): Promise<Measurement> {
   await viewportSettled()
 
   const planned = planCapture({
-    start: { _tag: "pick", element: target },
+    start: { _tag: "pick", element: picked.target },
+    destination: picked.destination,
+    url: new URL(window.location.href),
+    now: new Date(),
     layout: {
       boundsOf: (element) => element.getBoundingClientRect(),
       scroll: { x: window.scrollX, y: window.scrollY },
@@ -128,7 +150,9 @@ async function measureWhenSettled(target: Element): Promise<Measurement> {
 
   if (planned._tag === "err") return { _tag: "refused", refusal: planned.error }
 
-  return { _tag: "measured", crop: planned.value.crop, devicePixelRatio: window.devicePixelRatio }
+  const { crop, destination } = planned.value
+
+  return { _tag: "measured", crop, devicePixelRatio: window.devicePixelRatio, destination }
 }
 
 /** Resolve once the viewport has gone a moment without resizing, or after a limit. */

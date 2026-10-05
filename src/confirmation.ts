@@ -64,21 +64,31 @@ export async function showConfirmation(png: Blob, message: string): Promise<void
   thumbnail.getContext("2d")?.drawImage(image, 0, 0, thumbnail.width, thumbnail.height)
   image.close()
 
-  present([thumbnail, textOf(message)])
+  show([thumbnail, text(message)])
 }
 
 /**
- * Show a Confirmation explaining why nothing was captured, replacing any earlier one. It
- * removes itself after a few seconds.
+ * Show a Confirmation that nothing was delivered, without a thumbnail, so an image from an
+ * earlier Capture isn't mistaken for this one. Replaces any earlier Confirmation.
  *
- * @param refusal - Why the Capture plan refused the Target.
+ * @param reason - Why nothing was delivered, such as a failed Clipboard write.
+ */
+export function showFailure(reason: string): void {
+  show([text(reason)])
+}
+
+/**
+ * Show a Confirmation explaining why the Capture plan refused the Target, without a
+ * thumbnail. Replaces any earlier Confirmation.
+ *
+ * @param refusal - Why nothing was captured.
  */
 export function showRefusal(refusal: CaptureRefusal): void {
   switch (refusal._tag) {
     case "oversized":
-      present([
-        textOf("Too tall to capture in one image."),
-        textOf("Use Pick mode to capture a smaller part."),
+      show([
+        text("Too tall to capture in one image."),
+        text("Use Pick mode to capture a smaller part."),
       ])
 
       return
@@ -87,14 +97,15 @@ export function showRefusal(refusal: CaptureRefusal): void {
   }
 }
 
-function textOf(message: string): HTMLElement {
-  const text = document.createElement("span")
-  text.textContent = message
+function text(message: string): HTMLSpanElement {
+  const span = document.createElement("span")
+  span.textContent = message
 
-  return text
+  return span
 }
 
-function present(contents: ReadonlyArray<Node>): void {
+/** Show a Confirmation card with the given contents for a few seconds. */
+function show(contents: ReadonlyArray<HTMLElement>): void {
   const card = document.createElement("div")
   card.className = "confirmation"
   card.setAttribute("role", "status")
