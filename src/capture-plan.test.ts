@@ -640,3 +640,140 @@ test("a Pick Capture leaves Truncated text as rendered", async () => {
   expect(plan.expand.length).toBe(0)
   expect(plan.warnings).toEqual([])
 })
+
+/**
+ * How many elements matching `selector` the Capture shows: those in the Target's elements,
+ * these included, that aren't inside Clutter the plan removes.
+ */
+function shownCount(plan: CapturePlan, selector: string): number {
+  const inTarget = plan.target.flatMap((item) =>
+    [item, ...item.querySelectorAll(selector)].filter((element) => element.matches(selector))
+  )
+
+  return inTarget.filter((element) => isShown(plan, element)).length
+}
+
+/** Whether the Capture shows an element: it is in the Target and not inside removed Clutter. */
+function isShown(plan: CapturePlan, element: Element): boolean {
+  return (
+    plan.target.some((item) => item.contains(element)) &&
+    !plan.clutter.some((removed) => removed.contains(element))
+  )
+}
+
+test("a Post Capture removes the '…' menu and Grok actions buttons of every Post in the Conversation", async () => {
+  const plan = await planPostCapture("x-status-deep-reply.html", {
+    handle: "BrandonLuuMD",
+    postId: "2100910333376278960",
+  })
+
+  // The root, three Replies and the Focal post each have both buttons.
+  expect(shownCount(plan, 'article[data-testid="tweet"]')).toBe(5)
+  expect(plan.clutter.length).toBe(10)
+  expect(shownCount(plan, '[data-testid="caret"]')).toBe(0)
+  expect(shownCount(plan, 'button[aria-label="Grok actions"]')).toBe(0)
+})
+
+test("a Post Capture removes the 'Show translation' button together with its icon", async () => {
+  const plan = await planPostCapture("x-status-quote.html", {
+    handle: "AllanFeldt_",
+    postId: "2107159689482100881",
+  })
+
+  const translate = select(plan.target[0].ownerDocument, 'button[aria-label="Show translation"]')
+  // The translation icon in front of the button is its sibling, not inside it.
+  const icon = translate.previousElementSibling
+
+  expect(isShown(plan, translate)).toBe(false)
+  expect(icon === null ? "no icon" : isShown(plan, icon)).toBe(false)
+  // The Post's text and the quoted post's text stay.
+  expect(shownCount(plan, '[data-testid="tweetText"]')).toBe(2)
+})
+
+test("a Post Capture keeps the engagement counts, the timestamp and the community note", async () => {
+  const plan = await planPostCapture("x-status-community-note.html", {
+    handle: "realDonaldTrump",
+    postId: "2106395048015282265",
+  })
+
+  expect(plan.clutter.length).toBeGreaterThan(0)
+  expect(shownCount(plan, 'div[role="group"][aria-label*="views"]')).toBe(1)
+  expect(
+    shownCount(plan, '[data-testid="reply"], [data-testid="retweet"], [data-testid="like"]')
+  ).toBe(3)
+  expect(shownCount(plan, "time")).toBe(1)
+  expect(shownCount(plan, '[data-testid="birdwatch-pivot"]')).toBe(1)
+})
+
+test("a Post Capture keeps a community note inside the quoted post", async () => {
+  const plan = await planPostCapture("x-status-quote-community-note.html", {
+    handle: "pepelkoklisarot",
+    postId: "2107035042731999591",
+  })
+
+  expect(plan.clutter.length).toBeGreaterThan(0)
+  expect(shownCount(plan, '[data-testid="birdwatch-pivot"]')).toBe(1)
+  // The Post's timestamp and the quoted post's.
+  expect(shownCount(plan, "time")).toBe(2)
+})
+
+/** Plan a Pick Capture of an element on a saved X page. */
+function planPickCapture(element: Element): CapturePlan {
+  return planOf(
+    planCapture({
+      page: element.ownerDocument,
+      start: { _tag: "pick", element },
+      destination: "clipboard",
+      url: new URL("https://x.com/"),
+      now: new Date(2026, 9, 5, 12, 38, 42),
+      layout: layoutOf([], { x: 0, y: 0 }),
+    })
+  )
+}
+
+test("a Pick Capture of the Focal post's cell removes the reply composer and the Post's Clutter", async () => {
+  const page = await loadSavedPage("x-status-original.html")
+  const composer = select(page, '[data-testid="inline_reply_offscreen"]')
+  const focalCell = composer.closest('[data-testid="cellInnerDiv"]')
+
+  if (focalCell === null) throw new Error("The reply composer isn't in a cell")
+
+  const plan = planPickCapture(focalCell)
+
+  expect(isShown(plan, composer)).toBe(false)
+  expect(shownCount(plan, '[data-testid="caret"], button[aria-label="Grok actions"]')).toBe(0)
+  expect(shownCount(plan, 'article[data-testid="tweet"]')).toBe(1)
+})
+
+test("a Pick Capture of a whole status page removes 'Relevant people' with its frame", async () => {
+  const page = await loadSavedPage("x-status-original.html")
+  const relevantPeople = select(page, 'aside[aria-label="Relevant people"]')
+  // The bordered box around the section, which would otherwise stay as an empty frame.
+  const frame = relevantPeople.parentElement
+
+  const plan = planPickCapture(page.body)
+
+  expect(isShown(plan, relevantPeople)).toBe(false)
+  expect(frame === null ? "no frame" : isShown(plan, frame)).toBe(false)
+  // 30 of the page's 34 "…" menus are in Posts; the other 4, on trends in the sidebar, stay.
+  expect(shownCount(plan, '[data-testid="caret"]')).toBe(4)
+  expect(shownCount(plan, '[data-testid="sidebarColumn"]')).toBe(1)
+})
+
+test("a Pick Capture without a Post is left as rendered, even around 'Relevant people'", async () => {
+  const page = await loadSavedPage("x-status-original.html")
+
+  const plan = planPickCapture(select(page, '[data-testid="sidebarColumn"]'))
+
+  expect(plan.clutter.length).toBe(0)
+})
+
+test("a Pick Capture of a timeline removes every Post's Clutter but keeps the home composer", async () => {
+  const page = await loadSavedPage("x-timeline.html")
+
+  const plan = planPickCapture(select(page, '[data-testid="primaryColumn"]'))
+
+  expect(shownCount(plan, 'article[data-testid="tweet"]')).toBe(17)
+  expect(shownCount(plan, '[data-testid="caret"], button[aria-label="Grok actions"]')).toBe(0)
+  expect(shownCount(plan, '[data-testid="tweetTextarea_0"]')).toBe(1)
+})

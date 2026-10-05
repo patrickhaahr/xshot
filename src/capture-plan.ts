@@ -1,6 +1,8 @@
 import { err, ok } from "./prelude"
 import type { Result } from "./prelude"
 import {
+  clutterIn,
+  containsPost,
   conversationOf,
   cutOffQuotedPostsIn,
   focalPost,
@@ -62,6 +64,13 @@ export type CapturePlan = {
    * root Post down to the Focal post.
    */
   readonly target: Target
+
+  /**
+   * Page interface inside the Target that isn't content. It is taken out of the layout before
+   * the Target is measured, so it leaves no gap. Only Target elements that are or contain a
+   * Post have any.
+   */
+  readonly clutter: ReadonlyArray<Element>
 
   /**
    * The Target's full border box in document coordinates, however much of it is on screen. A
@@ -163,6 +172,7 @@ export function planCapture(input: {
 
   return ok({
     target,
+    clutter: target.flatMap((element) => (containsPost(element) ? clutterIn(element) : [])),
     crop: {
       x: bounds.x + layout.scroll.x,
       y: bounds.y + layout.scroll.y,

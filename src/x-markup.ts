@@ -163,3 +163,95 @@ export function postRefOf(post: Element): PostRef | null {
 
   return { handle, postId }
 }
+
+/**
+ * Page interface inside a Post that isn't content: the "…" menu, the Grok actions button next
+ * to it, and "Show translation" (formerly the "Translate post" link). `caret` also marks trend
+ * menus in the sidebar, so it only counts inside a Post.
+ */
+const POST_CLUTTER = [
+  '[data-testid="caret"]',
+  'button[aria-label="Grok actions"]',
+  'button[aria-label="Show translation"]',
+].join(", ")
+
+/**
+ * Page interface around Posts that isn't content: the reply composer, which shares the Focal
+ * post's cell, and the "Relevant people" section in the sidebar. The home timeline's own
+ * composer is not a reply composer and stays. "Discover more" is not recognised: no saved page
+ * shows it.
+ */
+const PAGE_CLUTTER = [
+  '[data-testid="inline_reply_offscreen"]',
+  'aside[aria-label="Relevant people"]',
+].join(", ")
+
+/**
+ * Whether a Target is or contains a Post, which is when its Clutter is removed.
+ *
+ * @param target - What a Capture shows.
+ * @returns True when the Target is a Post or has one inside it.
+ */
+export function containsPost(target: Element): boolean {
+  return target.matches(POST) || target.querySelector(POST) !== null
+}
+
+/**
+ * The Clutter in a Target.
+ *
+ * @param target - What a Capture shows.
+ * @returns The elements to take out of the layout so the Capture shows no Clutter, each the
+ *   outermost element that holds nothing else.
+ */
+export function clutterIn(target: Element): ReadonlyArray<Element> {
+  const posts = target.matches(POST) ? [target] : [...target.querySelectorAll(POST)]
+
+  const inPosts = posts.flatMap((post) =>
+    [...post.querySelectorAll(POST_CLUTTER)].map((control) => wholeControl(control, post))
+  )
+
+  const aroundPosts = [...target.querySelectorAll(PAGE_CLUTTER)].map((section) =>
+    wholeControl(section, target)
+  )
+
+  return [...inPosts, ...aroundPosts]
+}
+
+/**
+ * A control together with the wrappers and icons that are there only for it, such as the
+ * translation icon in front of "Show translation", so removing it leaves neither a stray icon
+ * nor a wrapper's spacing behind.
+ *
+ * @param control - A piece of Clutter.
+ * @param within - The element the control is in, which is never part of it.
+ * @returns The outermost element inside `within` that holds the control and nothing else.
+ */
+function wholeControl(control: Element, within: Element): Element {
+  let whole = control
+
+  while (
+    whole.parentElement !== null &&
+    whole.parentElement !== within &&
+    holdsOnly(whole.parentElement, whole)
+  ) {
+    whole = whole.parentElement
+  }
+
+  return whole
+}
+
+/** Whether `parent` holds nothing but `child` and icons: no other element and no text. */
+function holdsOnly(parent: Element, child: Element): boolean {
+  return [...parent.childNodes].every((node) => {
+    if (node === child) return true
+
+    switch (node.nodeType) {
+      case Node.ELEMENT_NODE:
+        return node.nodeName.toLowerCase() === "svg"
+      case Node.TEXT_NODE:
+        return (node.textContent ?? "").trim() === ""
+      default:
+        return true
+    }
+  })
+}
