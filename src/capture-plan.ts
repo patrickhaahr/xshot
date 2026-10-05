@@ -1,6 +1,6 @@
 import { err, ok } from "./prelude"
 import type { Result } from "./prelude"
-import { focalPost, postContaining, postRefOf } from "./x-markup"
+import { clutterIn, containsPost, focalPost, postContaining, postRefOf } from "./x-markup"
 import type { PostRef } from "./x-markup"
 
 /** A rectangle in CSS pixels. */
@@ -51,6 +51,12 @@ export type Layout = {
 export type CapturePlan = {
   /** What the Capture shows. */
   readonly target: Element
+
+  /**
+   * Page interface inside the Target that isn't content. It is taken out of the layout before
+   * the Target is measured, so it leaves no gap. Empty unless the Target is or contains a Post.
+   */
+  readonly clutter: ReadonlyArray<Element>
 
   /**
    * The Target's full border box in document coordinates, however much of it is on screen.
@@ -130,6 +136,7 @@ export function planCapture(input: {
 
   return ok({
     target,
+    clutter: containsPost(target) ? clutterIn(target) : [],
     crop: {
       x: bounds.x + layout.scroll.x,
       y: bounds.y + layout.scroll.y,

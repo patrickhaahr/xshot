@@ -1,5 +1,5 @@
 import { planCapture, startPostCapture } from "./capture-plan"
-import type { CaptureStart, Destination } from "./capture-plan"
+import type { CaptureStart, Destination, Layout } from "./capture-plan"
 import { dismissConfirmation, showConfirmation, showFailure, showRefusal } from "./confirmation"
 import type { CaptureResponse, Measurement, PageCommand, WorkerRequest } from "./messages"
 import { pick } from "./pick-mode"
@@ -167,8 +167,13 @@ function pngOf(response: CaptureResponse): Blob {
   return pngFromBase64(response.pngBase64)
 }
 
-/** Ask the worker to capture the picked Target, measuring it when the worker is ready. */
+/**
+ * Ask the worker to capture the picked Target, measuring it when the worker is ready. The
+ * page gets its Clutter back once the worker has captured it.
+ */
 async function capturePicked(picked: Picked): Promise<CaptureResponse> {
+  let restore = (): void => {}
+
   function answerMeasure(
     command: PageCommand,
     _sender: chrome.runtime.MessageSender,
@@ -179,16 +184,22 @@ async function capturePicked(picked: Picked): Promise<CaptureResponse> {
     void measureWhenSettled({
       start: { _tag: "pick", element: picked.target },
       destination: picked.destination,
-    }).then(sendResponse)
+    }).then((measured) => {
+      restore = measured.restore
+      sendResponse(measured.measurement)
+    })
 
     return true
   }
 
   chrome.runtime.onMessage.addListener(answerMeasure)
-  const response = await requestCapture({ type: "capture" })
-  chrome.runtime.onMessage.removeListener(answerMeasure)
 
-  return response
+  try {
+    return await requestCapture({ type: "capture" })
+  } finally {
+    chrome.runtime.onMessage.removeListener(answerMeasure)
+    restore()
+  }
 }
 
 async function requestCapture(request: WorkerRequest): Promise<CaptureResponse> {
@@ -214,32 +225,97 @@ async function measurePostWhenRendered(
 
   if (focal !== null) await imagesLoaded(focal)
 
-  return measureWhenSettled({ start: command.start, destination: command.destination })
+  // The Clutter stays out of the layout: the worker closes this background tab after capturing.
+  const { measurement } = await measureWhenSettled({
+    start: command.start,
+    destination: command.destination,
+  })
+
+  return measurement
 }
 
+/** A measurement, and how to put back the Clutter taken out of the layout for it. */
+type Measured = { readonly measurement: Measurement; readonly restore: () => void }
+
+/** A layout in which nothing is measured yet, for planning only what a Capture shows. */
+const UNMEASURED: Layout = {
+  boundsOf: () => ({ x: 0, y: 0, width: 0, height: 0 }),
+  scroll: { x: 0, y: 0 },
+}
+
+/**
+ * Plan the Capture once the viewport has settled, with its Clutter out of the layout. The
+ * Clutter stays out until `restore` is called, so the screenshot doesn't show it either.
+ */
 async function measureWhenSettled(input: {
   readonly start: CaptureStart
   readonly destination: Destination
-}): Promise<Measurement> {
+}): Promise<Measured> {
   await viewportSettled()
 
-  const planned = planCapture({
-    page: document,
-    start: input.start,
-    destination: input.destination,
-    url: new URL(window.location.href),
-    now: new Date(),
-    layout: {
-      boundsOf: (element) => element.getBoundingClientRect(),
-      scroll: { x: window.scrollX, y: window.scrollY },
-    },
+  function plan(layout: Layout): ReturnType<typeof planCapture> {
+    return planCapture({
+      page: document,
+      start: input.start,
+      destination: input.destination,
+      url: new URL(window.location.href),
+      now: new Date(),
+      layout,
+    })
+  }
+
+  // The Clutter changes the Target's size, so it is planned once unmeasured to learn the
+  // Clutter, and measured only once the Clutter is out of the layout.
+  const unmeasured = plan(UNMEASURED)
+  const restore = removeFromLayout(unmeasured._tag === "ok" ? unmeasured.value.clutter : [])
+
+  const planned = plan({
+    boundsOf: (element) => element.getBoundingClientRect(),
+    scroll: { x: window.scrollX, y: window.scrollY },
   })
 
-  if (planned._tag === "err") return { _tag: "refused", refusal: planned.error }
+  if (planned._tag === "err") {
+    restore()
+
+    return { measurement: { _tag: "refused", refusal: planned.error }, restore: () => {} }
+  }
 
   const { crop, destination } = planned.value
 
-  return { _tag: "measured", crop, devicePixelRatio: window.devicePixelRatio, destination }
+  return {
+    measurement: { _tag: "measured", crop, devicePixelRatio: window.devicePixelRatio, destination },
+    restore,
+  }
+}
+
+/**
+ * Take elements out of the layout, so they leave no gap, without detaching them from the page,
+ * which X's own scripts still manage.
+ *
+ * @returns How to put them back as they were.
+ */
+function removeFromLayout(elements: ReadonlyArray<Element>): () => void {
+  // Read before any is removed, so an element listed twice still gets its own value back.
+  const removed = elements.flatMap((element) =>
+    element instanceof HTMLElement
+      ? [
+          {
+            element,
+            display: element.style.getPropertyValue("display"),
+            priority: element.style.getPropertyPriority("display"),
+          },
+        ]
+      : []
+  )
+
+  for (const { element } of removed) element.style.setProperty("display", "none", "important")
+
+  return () => {
+    for (const { element, display, priority } of removed) {
+      if (display === "") element.style.removeProperty("display")
+      else element.style.setProperty("display", display, priority)
+    }
+  }
 }
 
 /**

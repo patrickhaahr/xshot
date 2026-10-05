@@ -27,7 +27,7 @@ What a Capture shows. For a Post Capture it is the Conversation ending at the Po
 _Avoid_: Node, element, selection
 
 **Clutter**:
-Page interface inside a Post that isn't content, removed before any Capture whose Target contains a Post: the reply composer, "Relevant people" and "Discover more" sections, the "Translate post" link, and the "…" menu button.
+Page interface inside a Post that isn't content, removed before any Capture whose Target contains a Post: the reply composer, "Relevant people" and "Discover more" sections, the "Show translation" button (formerly the "Translate post" link), the "…" menu button, and the Grok actions button.
 _Avoid_: Noise, junk, chrome
 
 **Truncated**:
