@@ -5,7 +5,7 @@ import type { CaptureResponse, Measurement, PageCommand, WorkerRequest } from ".
 import { pick } from "./pick-mode"
 import type { Picked } from "./pick-mode"
 import { attempt } from "./prelude"
-import { focalPost } from "./x-markup"
+import { conversationOf, focalPost } from "./x-markup"
 
 /** How long the viewport must go without resizing before the Target is measured. */
 const SETTLE_QUIET_MS = 300
@@ -211,9 +211,9 @@ async function requestCapture(request: WorkerRequest): Promise<CaptureResponse> 
 }
 
 /**
- * Measure a Post Capture on the Post's status page, once X has rendered the Focal post and its
- * images and the Truncated text is expanded. X renders the page after it loads, so the Focal
- * post can appear seconds later.
+ * Measure a Post Capture on the Post's status page, once X has rendered the Focal post and the
+ * images of its Conversation and the Truncated text is expanded. X renders the page after it
+ * loads, so the Focal post can appear seconds later; the Posts above it arrive with it.
  */
 async function measurePostWhenRendered(
   command: Extract<PageCommand, { readonly type: "measure-post" }>
@@ -222,7 +222,7 @@ async function measurePostWhenRendered(
   const focal = await rendered(() => focalPost(document), FOCAL_POST_LIMIT_MS)
 
   if (focal !== null) {
-    await imagesLoaded(focal)
+    await Promise.all(conversationOf(focal).map(imagesLoaded))
     await expandTruncatedText(input)
   }
 

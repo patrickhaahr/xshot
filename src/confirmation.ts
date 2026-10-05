@@ -1,4 +1,4 @@
-import type { CaptureRefusal, PartialCaptureWarning } from "./capture-plan"
+import type { CaptureRefusal, CaptureWarning } from "./capture-plan"
 import { mountOverlay } from "./overlay"
 import type { Overlay } from "./overlay"
 import { casesHandled } from "./prelude"
@@ -28,10 +28,16 @@ const CONFIRMATION_CSS = `
     border-radius: 4px;
     outline: 1px solid rgb(0 0 0 / 0.1);
   }
+  .warning {
+    color: #9a4d00;
+  }
   @media (prefers-color-scheme: dark) {
     .confirmation {
       background: #16181c;
       color: #e7e9ea;
+    }
+    .warning {
+      color: #ffb45c;
     }
     .thumbnail {
       outline-color: rgb(255 255 255 / 0.15);
@@ -47,12 +53,12 @@ let current: Overlay | null = null
  *
  * @param png - The Capture that was delivered.
  * @param message - What happened to it, such as "Copied to Clipboard".
- * @param warnings - What a Partial Capture is missing; empty for a complete Capture.
+ * @param warnings - Why it is a Partial Capture; empty when it is complete.
  */
 export async function showConfirmation(
   png: Blob,
   message: string,
-  warnings: ReadonlyArray<PartialCaptureWarning>
+  warnings: ReadonlyArray<CaptureWarning>
 ): Promise<void> {
   // A canvas rather than an <img>, because a page's Content Security Policy can block blob:
   // and data: images.
@@ -69,15 +75,29 @@ export async function showConfirmation(
   thumbnail.getContext("2d")?.drawImage(image, 0, 0, thumbnail.width, thumbnail.height)
   image.close()
 
-  show([thumbnail, text(message), ...warnings.map((warning) => text(warningMessage(warning)))])
+  show([thumbnail, text(message), ...warnings.map(warning)])
 }
 
-function warningMessage(warning: PartialCaptureWarning): string {
-  switch (warning._tag) {
+/** A Partial Capture's warning, set apart from the message so it isn't missed. */
+function warning(partial: CaptureWarning): HTMLSpanElement {
+  const span = text(warningMessage(partial))
+  span.className = "warning"
+
+  return span
+}
+
+function warningMessage(partial: CaptureWarning): string {
+  switch (partial._tag) {
+    case "unavailable-posts":
+      return partial.count === 1
+        ? "Partial Capture: 1 Post in the Conversation is unavailable."
+        : `Partial Capture: ${partial.count} Posts in the Conversation are unavailable.`
     case "not-expanded":
       return 'Partial Capture: some "Show more" text couldn\'t be expanded.'
     case "quoted-post-cut-off":
       return "Partial Capture: X shows only the start of a quoted post."
+    default:
+      return casesHandled(partial)
   }
 }
 

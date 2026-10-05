@@ -1,11 +1,13 @@
 import { err, ok } from "./prelude"
 import type { Result } from "./prelude"
 import {
-  cutOffQuotedPostsThrough,
+  conversationOf,
+  cutOffQuotedPostsIn,
   focalPost,
+  isPlaceholder,
   postContaining,
   postRefOf,
-  showMoreThrough,
+  showMoreIn,
 } from "./x-markup"
 import type { PostRef } from "./x-markup"
 
@@ -55,11 +57,15 @@ export type Layout = {
 
 /** What a Capture shows and where it is on the page. */
 export type CapturePlan = {
-  /** What the Capture shows. */
-  readonly target: Element
+  /**
+   * What the Capture shows, top to bottom: the picked element, or the Conversation from its
+   * root Post down to the Focal post.
+   */
+  readonly target: Target
 
   /**
-   * The Target's full border box in document coordinates, however much of it is on screen.
+   * The Target's full border box in document coordinates, however much of it is on screen. A
+   * Conversation's box spans from its first Post's top to the Focal post's bottom.
    * Fractions are kept: the debugger's screenshot clip takes fractional CSS pixels and
    * rounds only when it produces the image.
    */
@@ -74,12 +80,17 @@ export type CapturePlan = {
    */
   readonly expand: ReadonlyArray<Element>
 
-  /** What the Capture is missing, which makes it a Partial Capture. Empty for a complete one. */
-  readonly warnings: ReadonlyArray<PartialCaptureWarning>
+  /** Why the Capture is a Partial Capture; empty when it is complete. */
+  readonly warnings: ReadonlyArray<CaptureWarning>
 }
 
-/** Why a Capture is a Partial Capture. */
-export type PartialCaptureWarning =
+/** The elements a Capture shows, top to bottom; there is always at least one. */
+export type Target = readonly [Element, ...Element[]]
+
+/** Why a Capture is a Partial Capture: it is still delivered, with this warning. */
+export type CaptureWarning =
+  /** The Conversation has Posts X shows only as a placeholder, such as unavailable or deleted Posts. */
+  | { readonly _tag: "unavailable-posts"; readonly count: number }
   /** Truncated text that expanding didn't show in full, or not in time. */
   | { readonly _tag: "not-expanded" }
   /** A quoted post whose text X shows only the start of, with no way to expand it. */
@@ -146,11 +157,9 @@ export function planCapture(input: {
   if (targeted._tag === "err") return targeted
 
   const target = targeted.value
-  const bounds = layout.boundsOf(target)
+  const bounds = boundsAround(target.map(layout.boundsOf))
 
   if (bounds.height * CAPTURE_SCALE > MAX_IMAGE_HEIGHT) return err({ _tag: "oversized" })
-
-  const truncated = truncatedTextOf({ start: input.start, target })
 
   return ok({
     target,
@@ -161,21 +170,24 @@ export function planCapture(input: {
       height: bounds.height,
     },
     destination: planDestination(input),
-    expand: truncated.expand,
-    warnings: truncated.warnings,
+    expand: input.start._tag === "post" ? showMoreIn(target) : [],
+    warnings: warningsOf({ start: input.start, target }),
   })
 }
 
-/** What the Capture shows: the picked element, or the Focal post of the clicked Post's status page. */
+/**
+ * What the Capture shows: the picked element, or the Conversation ending at the Focal post of
+ * the clicked Post's status page.
+ */
 function targetOf(input: {
   readonly page: Document
   readonly start: CaptureStart
-}): Result<Element, CaptureRefusal> {
+}): Result<Target, CaptureRefusal> {
   const { page, start } = input
 
   switch (start._tag) {
     case "pick":
-      return ok(start.element)
+      return ok([start.element])
     case "post": {
       const focal = focalPost(page)
 
@@ -184,33 +196,45 @@ function targetOf(input: {
         return err({ _tag: "post-not-shown" })
       }
 
-      return ok(focal)
+      return ok(conversationOf(focal))
     }
   }
 }
 
 /**
- * The Truncated text a Post Capture expands, and what stays shortened. A Post Capture is planned
- * again after expanding, so text still to expand then is text that expanding failed to show.
- * A Pick Capture shows Truncated text as rendered, which leaves nothing missing.
+ * Why the Capture is a Partial Capture. A Pick Capture shows what was picked as rendered, so
+ * only a Post Capture's Conversation is checked for Posts X couldn't show and for text it
+ * shortened. A Post Capture is planned again after expanding, so Truncated text still there
+ * then is text that expanding failed to show.
  */
-function truncatedTextOf(input: {
+function warningsOf(input: {
   readonly start: CaptureStart
-  readonly target: Element
-}): Pick<CapturePlan, "expand" | "warnings"> {
-  if (input.start._tag === "pick") return { expand: [], warnings: [] }
+  readonly target: Target
+}): ReadonlyArray<CaptureWarning> {
+  if (input.start._tag === "pick") return []
 
-  // A Post Capture's Target is the status page's Focal post.
-  const expand = showMoreThrough(input.target)
-  const warnings: PartialCaptureWarning[] = []
+  const warnings: CaptureWarning[] = []
+  const unavailable = input.target.filter(isPlaceholder).length
 
-  if (expand.length > 0) warnings.push({ _tag: "not-expanded" })
+  if (unavailable > 0) warnings.push({ _tag: "unavailable-posts", count: unavailable })
 
-  if (cutOffQuotedPostsThrough(input.target).length > 0) {
+  if (showMoreIn(input.target).length > 0) warnings.push({ _tag: "not-expanded" })
+
+  if (cutOffQuotedPostsIn(input.target).length > 0) {
     warnings.push({ _tag: "quoted-post-cut-off" })
   }
 
-  return { expand, warnings }
+  return warnings
+}
+
+/** The smallest rectangle around all of the given rectangles. */
+function boundsAround(rects: ReadonlyArray<Rect>): Rect {
+  const left = Math.min(...rects.map((rect) => rect.x))
+  const top = Math.min(...rects.map((rect) => rect.y))
+  const right = Math.max(...rects.map((rect) => rect.x + rect.width))
+  const bottom = Math.max(...rects.map((rect) => rect.y + rect.height))
+
+  return { x: left, y: top, width: right - left, height: bottom - top }
 }
 
 function planDestination(input: {

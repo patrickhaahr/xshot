@@ -4,9 +4,9 @@
 
 import type {
   CaptureRefusal,
+  CaptureWarning,
   Destination,
   DestinationPlan,
-  PartialCaptureWarning,
   PostCaptureStart,
   Rect,
 } from "./capture-plan"
@@ -43,8 +43,8 @@ export type Measurement =
       /** Where the Capture is delivered: the worker saves a Download, the page fills the Clipboard. */
       readonly destination: DestinationPlan
 
-      /** What the Capture is missing, for the Confirmation. Empty unless it is a Partial Capture. */
-      readonly warnings: ReadonlyArray<PartialCaptureWarning>
+      /** Why the Capture is a Partial Capture; empty when it is complete. */
+      readonly warnings: ReadonlyArray<CaptureWarning>
     }
   /** The Capture plan refused the Target, so no screenshot is taken. */
   | { readonly _tag: "refused"; readonly refusal: CaptureRefusal }
@@ -68,7 +68,9 @@ export type CaptureResponse =
   | {
       readonly _tag: "captured"
       readonly pngBase64: string
-      readonly warnings: ReadonlyArray<PartialCaptureWarning>
+
+      /** Why it is a Partial Capture, for the Confirmation; empty when it is complete. */
+      readonly warnings: ReadonlyArray<CaptureWarning>
     }
   | { readonly _tag: "refused"; readonly refusal: CaptureRefusal }
   | { readonly _tag: "failed"; readonly reason: string }

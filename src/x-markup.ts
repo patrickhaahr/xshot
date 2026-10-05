@@ -36,6 +36,12 @@ const POST = 'article[data-testid="tweet"]'
  */
 const FOCAL_POST = `${POST}[tabindex="-1"]`
 
+/** One item of X's virtualised lists, such as a Post on a status page. */
+const CELL = '[data-testid="cellInnerDiv"]'
+
+/** A Post or a placeholder X shows instead of a Post it can't show, such as a deleted one. */
+const POST_OR_PLACEHOLDER = "article"
+
 /** A Post's own permalink is the only status link around a timestamp; a quoted post's timestamp has no link. */
 const PERMALINK_TIME = 'a[href*="/status/"] time'
 
@@ -63,27 +69,60 @@ export function focalPost(page: ParentNode): Element | null {
 }
 
 /**
+ * The Conversation a status page shows above its Focal post, down to and including it. Each
+ * Post sits in its own list cell, and the cells before the Focal post's cell are the Posts it
+ * replies to, root first. The Replies below are left out, and so is the reply composer, which
+ * shares the Focal post's cell.
+ *
+ * @param focal - The Focal post.
+ * @returns The Posts from the root down to the Focal post, in order, including placeholders for
+ *   Posts X shows as unavailable.
+ */
+export function conversationOf(focal: Element): readonly [Element, ...Element[]] {
+  const conversation: [Element, ...Element[]] = [focal]
+  let cell = focal.closest(CELL)?.previousElementSibling ?? null
+
+  for (; cell !== null; cell = cell.previousElementSibling) {
+    const item = cell.matches(CELL) ? cell.querySelector(POST_OR_PLACEHOLDER) : null
+
+    if (item !== null) conversation.unshift(item)
+  }
+
+  return conversation
+}
+
+/**
+ * Whether a Conversation item is X's placeholder for a Post it can't show, such as an
+ * unavailable or deleted Post, rather than a Post.
+ *
+ * @param item - A Post or placeholder from `conversationOf`.
+ * @returns True for a placeholder.
+ */
+export function isPlaceholder(item: Element): boolean {
+  return !item.matches(POST)
+}
+
+/**
  * X's "Show more" control at the end of a Truncated Post's text. It is a button that expands
  * the text in place and then disappears. Quoted posts never have one.
  */
-const SHOW_MORE = `${POST} [data-testid="tweet-text-show-more-link"]`
+const SHOW_MORE = '[data-testid="tweet-text-show-more-link"]'
 
 /**
- * The "Show more" controls of the Truncated Posts on a status page from the top down to and
- * including the Focal post: the Conversation, not the Replies below it.
+ * The "Show more" controls of the Truncated Posts among the given ones.
  *
- * @param focal - The page's Focal post.
+ * @param posts - Posts, such as a Conversation; placeholders have no text to expand.
  * @returns The controls in page order.
  */
-export function showMoreThrough(focal: Element): Element[] {
-  return throughFocal(focal, SHOW_MORE)
+export function showMoreIn(posts: ReadonlyArray<Element>): Element[] {
+  return posts.flatMap((post) => [...post.querySelectorAll(SHOW_MORE)])
 }
 
 /**
  * A quoted post's text. A quoted post is a link card inside the Post that quotes it, with its
  * own author name; the Post's own text is outside the card.
  */
-const QUOTED_POST_TEXT = `${POST} div[role="link"]:has([data-testid="User-Name"]) [data-testid="tweetText"]`
+const QUOTED_POST_TEXT = 'div[role="link"]:has([data-testid="User-Name"]) [data-testid="tweetText"]'
 
 /**
  * The shortest quoted post text that is taken as cut off. X shows only about the
@@ -93,25 +132,15 @@ const QUOTED_POST_TEXT = `${POST} div[role="link"]:has([data-testid="User-Name"]
 const QUOTED_POST_SHOWN_LENGTH = 260
 
 /**
- * The quoted posts X has cut off on a status page from the top down to and including the Focal
- * post. Their text can't be expanded.
+ * The quoted posts X has cut off in the given Posts. Their text can't be expanded.
  *
- * @param focal - The page's Focal post.
+ * @param posts - Posts, such as a Conversation.
  * @returns The cut-off quoted posts' texts in page order.
  */
-export function cutOffQuotedPostsThrough(focal: Element): Element[] {
-  return throughFocal(focal, QUOTED_POST_TEXT).filter(
-    (text) => (text.textContent ?? "").length >= QUOTED_POST_SHOWN_LENGTH
-  )
-}
-
-/** The elements matching `selector` from the top of the page down to and including the Focal post. */
-function throughFocal(focal: Element, selector: string): Element[] {
-  return [...focal.ownerDocument.querySelectorAll(selector)].filter(
-    (element) =>
-      focal.contains(element) ||
-      (element.compareDocumentPosition(focal) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0
-  )
+export function cutOffQuotedPostsIn(posts: ReadonlyArray<Element>): Element[] {
+  return posts
+    .flatMap((post) => [...post.querySelectorAll(QUOTED_POST_TEXT)])
+    .filter((text) => (text.textContent ?? "").length >= QUOTED_POST_SHOWN_LENGTH)
 }
 
 /**
