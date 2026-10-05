@@ -63,6 +63,58 @@ export function focalPost(page: ParentNode): Element | null {
 }
 
 /**
+ * X's "Show more" control at the end of a Truncated Post's text. It is a button that expands
+ * the text in place and then disappears. Quoted posts never have one.
+ */
+const SHOW_MORE = `${POST} [data-testid="tweet-text-show-more-link"]`
+
+/**
+ * The "Show more" controls of the Truncated Posts on a status page from the top down to and
+ * including the Focal post: the Conversation, not the Replies below it.
+ *
+ * @param focal - The page's Focal post.
+ * @returns The controls in page order.
+ */
+export function showMoreThrough(focal: Element): Element[] {
+  return throughFocal(focal, SHOW_MORE)
+}
+
+/**
+ * A quoted post's text. A quoted post is a link card inside the Post that quotes it, with its
+ * own author name; the Post's own text is outside the card.
+ */
+const QUOTED_POST_TEXT = `${POST} div[role="link"]:has([data-testid="User-Name"]) [data-testid="tweetText"]`
+
+/**
+ * The shortest quoted post text that is taken as cut off. X shows only about the
+ * first 280 characters of a quoted post, with no "Show more" and no ellipsis: cut-off texts
+ * ran 275 to 279 characters in saved pages, complete ones at most 217.
+ */
+const QUOTED_POST_SHOWN_LENGTH = 260
+
+/**
+ * The quoted posts X has cut off on a status page from the top down to and including the Focal
+ * post. Their text can't be expanded.
+ *
+ * @param focal - The page's Focal post.
+ * @returns The cut-off quoted posts' texts in page order.
+ */
+export function cutOffQuotedPostsThrough(focal: Element): Element[] {
+  return throughFocal(focal, QUOTED_POST_TEXT).filter(
+    (text) => (text.textContent ?? "").length >= QUOTED_POST_SHOWN_LENGTH
+  )
+}
+
+/** The elements matching `selector` from the top of the page down to and including the Focal post. */
+function throughFocal(focal: Element, selector: string): Element[] {
+  return [...focal.ownerDocument.querySelectorAll(selector)].filter(
+    (element) =>
+      focal.contains(element) ||
+      (element.compareDocumentPosition(focal) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0
+  )
+}
+
+/**
  * Which Post a Post element shows, read from its permalink. In a repost, that is the original
  * Post, not the repost.
  *

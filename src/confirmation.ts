@@ -1,4 +1,4 @@
-import type { CaptureRefusal } from "./capture-plan"
+import type { CaptureRefusal, PartialCaptureWarning } from "./capture-plan"
 import { mountOverlay } from "./overlay"
 import type { Overlay } from "./overlay"
 import { casesHandled } from "./prelude"
@@ -47,8 +47,13 @@ let current: Overlay | null = null
  *
  * @param png - The Capture that was delivered.
  * @param message - What happened to it, such as "Copied to Clipboard".
+ * @param warnings - What a Partial Capture is missing; empty for a complete Capture.
  */
-export async function showConfirmation(png: Blob, message: string): Promise<void> {
+export async function showConfirmation(
+  png: Blob,
+  message: string,
+  warnings: ReadonlyArray<PartialCaptureWarning>
+): Promise<void> {
   // A canvas rather than an <img>, because a page's Content Security Policy can block blob:
   // and data: images.
   const image = await createImageBitmap(png)
@@ -64,7 +69,16 @@ export async function showConfirmation(png: Blob, message: string): Promise<void
   thumbnail.getContext("2d")?.drawImage(image, 0, 0, thumbnail.width, thumbnail.height)
   image.close()
 
-  show([thumbnail, text(message)])
+  show([thumbnail, text(message), ...warnings.map((warning) => text(warningMessage(warning)))])
+}
+
+function warningMessage(warning: PartialCaptureWarning): string {
+  switch (warning._tag) {
+    case "not-expanded":
+      return 'Partial Capture: some "Show more" text couldn\'t be expanded.'
+    case "quoted-post-cut-off":
+      return "Partial Capture: X shows only the start of a quoted post."
+  }
 }
 
 /**

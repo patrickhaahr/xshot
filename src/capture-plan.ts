@@ -1,6 +1,12 @@
 import { err, ok } from "./prelude"
 import type { Result } from "./prelude"
-import { focalPost, postContaining, postRefOf } from "./x-markup"
+import {
+  cutOffQuotedPostsThrough,
+  focalPost,
+  postContaining,
+  postRefOf,
+  showMoreThrough,
+} from "./x-markup"
 import type { PostRef } from "./x-markup"
 
 /** A rectangle in CSS pixels. */
@@ -61,7 +67,23 @@ export type CapturePlan = {
 
   /** Where the Capture is delivered. */
   readonly destination: DestinationPlan
+
+  /**
+   * The Truncated text to expand before a Post Capture: X's "Show more" controls, which the
+   * page clicks. A Pick Capture shows Truncated text as rendered, so it expands nothing.
+   */
+  readonly expand: ReadonlyArray<Element>
+
+  /** What the Capture is missing, which makes it a Partial Capture. Empty for a complete one. */
+  readonly warnings: ReadonlyArray<PartialCaptureWarning>
 }
+
+/** Why a Capture is a Partial Capture. */
+export type PartialCaptureWarning =
+  /** Truncated text that expanding didn't show in full, or not in time. */
+  | { readonly _tag: "not-expanded" }
+  /** A quoted post whose text X shows only the start of, with no way to expand it. */
+  | { readonly _tag: "quoted-post-cut-off" }
 
 /** Why no Capture is taken. */
 export type CaptureRefusal =
@@ -128,6 +150,8 @@ export function planCapture(input: {
 
   if (bounds.height * CAPTURE_SCALE > MAX_IMAGE_HEIGHT) return err({ _tag: "oversized" })
 
+  const truncated = truncatedTextOf({ start: input.start, target })
+
   return ok({
     target,
     crop: {
@@ -137,6 +161,8 @@ export function planCapture(input: {
       height: bounds.height,
     },
     destination: planDestination(input),
+    expand: truncated.expand,
+    warnings: truncated.warnings,
   })
 }
 
@@ -161,6 +187,30 @@ function targetOf(input: {
       return ok(focal)
     }
   }
+}
+
+/**
+ * The Truncated text a Post Capture expands, and what stays shortened. A Post Capture is planned
+ * again after expanding, so text still to expand then is text that expanding failed to show.
+ * A Pick Capture shows Truncated text as rendered, which leaves nothing missing.
+ */
+function truncatedTextOf(input: {
+  readonly start: CaptureStart
+  readonly target: Element
+}): Pick<CapturePlan, "expand" | "warnings"> {
+  if (input.start._tag === "pick") return { expand: [], warnings: [] }
+
+  // A Post Capture's Target is the status page's Focal post.
+  const expand = showMoreThrough(input.target)
+  const warnings: PartialCaptureWarning[] = []
+
+  if (expand.length > 0) warnings.push({ _tag: "not-expanded" })
+
+  if (cutOffQuotedPostsThrough(input.target).length > 0) {
+    warnings.push({ _tag: "quoted-post-cut-off" })
+  }
+
+  return { expand, warnings }
 }
 
 function planDestination(input: {

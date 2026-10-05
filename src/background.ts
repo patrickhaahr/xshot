@@ -209,7 +209,7 @@ async function screenshot(input: {
 
   if (measured.value._tag === "refused") return measured.value
 
-  const { crop, devicePixelRatio, destination } = measured.value
+  const { crop, devicePixelRatio, destination, warnings } = measured.value
 
   const shot = await attempt(
     chrome.debugger.sendCommand(debuggee, "Page.captureScreenshot", {
@@ -229,13 +229,13 @@ async function screenshot(input: {
   switch (destination._tag) {
     case "clipboard":
       // The page writes the Clipboard, which a service worker can't reach.
-      return { _tag: "captured", pngBase64: data }
+      return { _tag: "captured", pngBase64: data, warnings }
     case "download": {
       const saved = await saveDownload({ pngBase64: data, filename: destination.filename })
 
       if (saved._tag === "err") return failed("save the Download", saved.error)
 
-      return { _tag: "captured", pngBase64: data }
+      return { _tag: "captured", pngBase64: data, warnings }
     }
   }
 }
