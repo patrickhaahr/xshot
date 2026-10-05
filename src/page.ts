@@ -1,5 +1,5 @@
 import { planCapture } from "./capture-plan"
-import { dismissConfirmation, showConfirmation } from "./confirmation"
+import { dismissConfirmation, showConfirmation, showRefusal } from "./confirmation"
 import type { CaptureResponse, Measurement, PageCommand, WorkerRequest } from "./messages"
 import { pick } from "./pick-mode"
 import { attempt } from "./prelude"
@@ -45,11 +45,27 @@ async function pickThenCapture(): Promise<void> {
 
   // The write starts right away, while the choosing click still counts as user activation and
   // the page has focus; the Clipboard takes the image once the worker has captured it.
-  const png = capture(picked.target)
+  const response = capture(picked.target)
+  const png = response.then(pngOf)
 
   const written = await attempt(
     navigator.clipboard.write([new ClipboardItem({ "image/png": png })])
   )
+
+  const captured = await response
+
+  switch (captured._tag) {
+    case "refused":
+      showRefusal(captured.refusal)
+
+      return
+    case "failed":
+      console.error(`XShot: ${captured.reason}`)
+
+      return
+    case "captured":
+      break
+  }
 
   if (written._tag === "err") {
     console.error(`XShot: ${written.error.message}`)
@@ -61,12 +77,17 @@ async function pickThenCapture(): Promise<void> {
 }
 
 /**
- * Ask the worker to capture the Target, measuring it when the worker is ready.
- *
- * Rejects on failure rather than returning a result, because the Clipboard takes the image
- * as a promise.
+ * The captured image, for the Clipboard, which takes it as a promise and so learns of a
+ * refused or failed Capture only through a rejection.
  */
-async function capture(target: Element): Promise<Blob> {
+function pngOf(response: CaptureResponse): Blob {
+  if (response._tag !== "captured") throw new Error("Nothing was captured")
+
+  return pngFromBase64(response.pngBase64)
+}
+
+/** Ask the worker to capture the Target, measuring it when the worker is ready. */
+async function capture(target: Element): Promise<CaptureResponse> {
   function answerMeasure(
     command: PageCommand,
     _sender: chrome.runtime.MessageSender,
@@ -81,26 +102,23 @@ async function capture(target: Element): Promise<Blob> {
 
   chrome.runtime.onMessage.addListener(answerMeasure)
 
-  try {
-    const response = await chrome.runtime.sendMessage<WorkerRequest, CaptureResponse>({
-      type: "capture",
-    })
+  const response = await attempt(
+    chrome.runtime.sendMessage<WorkerRequest, CaptureResponse>({ type: "capture" })
+  )
 
-    switch (response._tag) {
-      case "captured":
-        return pngFromBase64(response.pngBase64)
-      case "failed":
-        throw new Error(response.reason)
-    }
-  } finally {
-    chrome.runtime.onMessage.removeListener(answerMeasure)
+  chrome.runtime.onMessage.removeListener(answerMeasure)
+
+  if (response._tag === "err") {
+    return { _tag: "failed", reason: `Couldn't reach XShot: ${response.error.message}` }
   }
+
+  return response.value
 }
 
 async function measureWhenSettled(target: Element): Promise<Measurement> {
   await viewportSettled()
 
-  const { crop } = planCapture({
+  const planned = planCapture({
     start: { _tag: "pick", element: target },
     layout: {
       boundsOf: (element) => element.getBoundingClientRect(),
@@ -108,7 +126,9 @@ async function measureWhenSettled(target: Element): Promise<Measurement> {
     },
   })
 
-  return { crop, devicePixelRatio: window.devicePixelRatio }
+  if (planned._tag === "err") return { _tag: "refused", refusal: planned.error }
+
+  return { _tag: "measured", crop: planned.value.crop, devicePixelRatio: window.devicePixelRatio }
 }
 
 /** Resolve once the viewport has gone a moment without resizing, or after a limit. */

@@ -3,7 +3,10 @@ import { afterAll, beforeAll, expect, test } from "bun:test"
 import { GlobalRegistrator } from "@happy-dom/global-registrator"
 
 import { planCapture } from "./capture-plan"
-import type { Layout, Rect } from "./capture-plan"
+import type { CapturePlan, CaptureRefusal, Layout, Rect } from "./capture-plan"
+
+// Never compare Elements with toEqual: a failing diff of a happy-dom node formats the whole
+// DOM graph and can exhaust memory. Compare them with toBe and plain data with toEqual.
 
 beforeAll(() => {
   GlobalRegistrator.register({
@@ -46,6 +49,18 @@ function layoutOf(
   }
 }
 
+function planOf(planned: ReturnType<typeof planCapture>): CapturePlan {
+  if (planned._tag !== "ok") throw new Error(`Expected a plan, got ${planned.error._tag}`)
+
+  return planned.value
+}
+
+function refusalOf(planned: ReturnType<typeof planCapture>): CaptureRefusal {
+  if (planned._tag !== "err") throw new Error("Expected a refusal, got a plan")
+
+  return planned.error
+}
+
 test("a Pick Capture crops the whole picked element in document coordinates, beyond the viewport", async () => {
   const page = await loadSavedPage("wikipedia-screenshot.html")
   const figure = select(page, "figure#mwBQ")
@@ -57,8 +72,31 @@ test("a Pick Capture crops the whole picked element in document coordinates, bey
     y: 1200,
   })
 
-  const plan = planCapture({ start: { _tag: "pick", element: figure }, layout })
+  const plan = planOf(planCapture({ start: { _tag: "pick", element: figure }, layout }))
 
   expect(plan.target).toBe(figure)
   expect(plan.crop).toEqual({ x: 960.25, y: 899.5, width: 222, height: 1800.75 })
+})
+
+test("a Target over 8,192 CSS px tall is refused as Oversized", async () => {
+  const page = await loadSavedPage("wikipedia-screenshot.html")
+  const article = select(page, "#mw-content-text")
+
+  // 8,192.5 CSS px is 16,385 image px at 2x, one past the tallest image Chromium can produce.
+  const layout = layoutOf([[article, { x: 0, y: 0, width: 960, height: 8192.5 }]], { x: 0, y: 0 })
+
+  const refusal = refusalOf(planCapture({ start: { _tag: "pick", element: article }, layout }))
+
+  expect(refusal).toEqual({ _tag: "oversized" })
+})
+
+test("a Target exactly 8,192 CSS px tall is planned", async () => {
+  const page = await loadSavedPage("wikipedia-screenshot.html")
+  const article = select(page, "#mw-content-text")
+  const layout = layoutOf([[article, { x: 0, y: 40, width: 960, height: 8192 }]], { x: 0, y: 0 })
+
+  const plan = planOf(planCapture({ start: { _tag: "pick", element: article }, layout }))
+
+  expect(plan.target).toBe(article)
+  expect(plan.crop).toEqual({ x: 0, y: 40, width: 960, height: 8192 })
 })

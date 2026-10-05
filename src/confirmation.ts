@@ -1,5 +1,7 @@
+import type { CaptureRefusal } from "./capture-plan"
 import { mountOverlay } from "./overlay"
 import type { Overlay } from "./overlay"
+import { casesHandled } from "./prelude"
 
 /** How long a Confirmation stays on the page. */
 const VISIBLE_MS = 3000
@@ -62,12 +64,41 @@ export async function showConfirmation(png: Blob, message: string): Promise<void
   thumbnail.getContext("2d")?.drawImage(image, 0, 0, thumbnail.width, thumbnail.height)
   image.close()
 
+  present([thumbnail, textOf(message)])
+}
+
+/**
+ * Show a Confirmation explaining why nothing was captured, replacing any earlier one. It
+ * removes itself after a few seconds.
+ *
+ * @param refusal - Why the Capture plan refused the Target.
+ */
+export function showRefusal(refusal: CaptureRefusal): void {
+  switch (refusal._tag) {
+    case "oversized":
+      present([
+        textOf("Too tall to capture in one image."),
+        textOf("Use Pick mode to capture a smaller part."),
+      ])
+
+      return
+    default:
+      casesHandled(refusal._tag)
+  }
+}
+
+function textOf(message: string): HTMLElement {
   const text = document.createElement("span")
   text.textContent = message
+
+  return text
+}
+
+function present(contents: ReadonlyArray<Node>): void {
   const card = document.createElement("div")
   card.className = "confirmation"
   card.setAttribute("role", "status")
-  card.append(thumbnail, text)
+  card.append(...contents)
 
   dismissConfirmation()
   const overlay = mountOverlay({ name: "xshot-confirmation", css: CONFIRMATION_CSS })
