@@ -12,23 +12,72 @@ const HIGHLIGHT_CSS = `
 `
 
 /**
- * Enter Pick mode: a highlight follows the element under the cursor until a click chooses it.
- * The highlight is gone by the time the promise resolves.
- *
- * @returns The element the user clicked.
+ * Wheel travel, in CSS pixels, that widens or narrows the highlight by one more element while
+ * the wheel keeps turning. The first turn after a pause always moves one element, so a single
+ * notch of a mouse wheel does, however few pixels the platform reports for it.
  */
-export function pick(): Promise<Element> {
+const WHEEL_STEP_PX = 50
+
+/** A pause between wheel events this long starts a new turn of the wheel. */
+const WHEEL_PAUSE_MS = 200
+
+/**
+ * Button events that would press, focus, select text in or activate something on the page.
+ * Pick mode keeps all of them from the page so that the choosing click does nothing there.
+ */
+const PRESS_EVENTS = [
+  "pointerdown",
+  "mousedown",
+  "pointerup",
+  "mouseup",
+  "click",
+  "auxclick",
+  "dblclick",
+] as const
+
+/** How Pick mode ended. */
+export type PickOutcome =
+  /** A click chose the highlighted element as the Target. */
+  | { readonly _tag: "picked"; readonly target: Element }
+  /** Escape left Pick mode without choosing anything. */
+  | { readonly _tag: "cancelled" }
+
+/**
+ * Enter Pick mode: a highlight follows the element under the cursor, ↑ or the wheel turned up
+ * widens it to the enclosing element, ↓ or the wheel turned down narrows it back the way it
+ * came, a click chooses it and Escape leaves.
+ *
+ * While Pick mode lasts the page receives no button presses, and neither the navigation keys
+ * nor the wheel scroll it. When the promise resolves, the highlight and every listener are
+ * gone, so the page behaves as before.
+ *
+ * @returns The element the user chose, or that they cancelled.
+ */
+export function pick(): Promise<PickOutcome> {
   const overlay = mountOverlay({ name: "xshot-pick-mode", css: HIGHLIGHT_CSS })
   const highlight = document.createElement("div")
   highlight.className = "highlight"
   highlight.hidden = true
   overlay.root.append(highlight)
 
+  const listening = new AbortController()
+
+  /** The element under the cursor. */
   let hovered: Element | null = null
 
+  /** What a click would choose: the hovered element or, after widening, one enclosing it. */
+  let highlighted: Element | null = null
+
+  /** The elements narrowing goes back through, the next one last. Empty unless widened. */
+  let narrower: Element[] = []
+
+  let wheelDirection = 0
+  let wheelTravel = 0
+  let lastWheelAt = Number.NEGATIVE_INFINITY
+
   function cover(): void {
-    if (hovered === null) return
-    const bounds = hovered.getBoundingClientRect()
+    if (highlighted === null) return
+    const bounds = highlighted.getBoundingClientRect()
     highlight.hidden = false
     highlight.style.left = `${bounds.left}px`
     highlight.style.top = `${bounds.top}px`
@@ -39,21 +88,125 @@ export function pick(): Promise<Element> {
   function follow(event: MouseEvent): void {
     if (!(event.target instanceof Element) || event.target === hovered) return
     hovered = event.target
+
+    // A widened highlight stays while the cursor moves inside it, so a small slip of the
+    // mouse before clicking doesn't lose it. Narrowing then heads for the cursor.
+    if (highlighted !== null && narrower.length > 0 && highlighted.contains(hovered)) {
+      narrower = pathBetween(highlighted, hovered)
+    } else {
+      highlighted = hovered
+      narrower = []
+    }
+
     cover()
   }
 
+  function widen(): void {
+    const enclosing = highlighted?.parentElement
+
+    if (highlighted === null || enclosing === null || enclosing === undefined) return
+    narrower.push(highlighted)
+    highlighted = enclosing
+    cover()
+  }
+
+  function narrow(): void {
+    const previous = narrower.pop()
+
+    if (previous === undefined) return
+    highlighted = previous
+    cover()
+  }
+
+  function turnWheel(event: WheelEvent): void {
+    // Ctrl+wheel is the browser's zoom; a purely sideways turn neither widens nor narrows.
+    if (event.ctrlKey || event.deltaY === 0) return
+    event.preventDefault()
+    event.stopImmediatePropagation()
+
+    const direction = Math.sign(event.deltaY)
+
+    const pixels =
+      event.deltaMode === WheelEvent.DOM_DELTA_PIXEL ? Math.abs(event.deltaY) : WHEEL_STEP_PX
+
+    const freshTurn = event.timeStamp - lastWheelAt > WHEEL_PAUSE_MS || direction !== wheelDirection
+
+    lastWheelAt = event.timeStamp
+    wheelDirection = direction
+    wheelTravel = freshTurn ? WHEEL_STEP_PX : wheelTravel + pixels
+
+    if (wheelTravel < WHEEL_STEP_PX) return
+    wheelTravel = 0
+
+    if (direction < 0) {
+      widen()
+    } else {
+      narrow()
+    }
+  }
+
   return new Promise((resolve) => {
-    function choose(event: MouseEvent): void {
-      if (!(event.target instanceof Element)) return
-      window.removeEventListener("mousemove", follow, true)
-      window.removeEventListener("scroll", cover, true)
-      window.removeEventListener("click", choose, true)
+    function finish(outcome: PickOutcome): void {
+      listening.abort()
       overlay.remove()
-      resolve(event.target)
+      resolve(outcome)
     }
 
-    window.addEventListener("mousemove", follow, true)
-    window.addEventListener("scroll", cover, { capture: true, passive: true })
-    window.addEventListener("click", choose, true)
+    function press(event: MouseEvent): void {
+      event.preventDefault()
+      event.stopImmediatePropagation()
+
+      if (event.type !== "click") return
+      follow(event)
+
+      if (highlighted !== null) finish({ _tag: "picked", target: highlighted })
+    }
+
+    function navigate(event: KeyboardEvent): void {
+      // Leave the browser's and the system's shortcuts alone.
+      if (event.ctrlKey || event.metaKey || event.altKey) return
+
+      switch (event.key) {
+        case "ArrowUp":
+          widen()
+          break
+        case "ArrowDown":
+          narrow()
+          break
+        case "Escape":
+          finish({ _tag: "cancelled" })
+          break
+        default:
+          return
+      }
+
+      event.preventDefault()
+      event.stopImmediatePropagation()
+    }
+
+    // Listening on the window in the capture phase runs before any of the page's own
+    // listeners on its elements, so stopping an event there keeps it from the page.
+    const options = { capture: true, signal: listening.signal }
+    window.addEventListener("mousemove", follow, options)
+    window.addEventListener("scroll", cover, { ...options, passive: true })
+    window.addEventListener("wheel", turnWheel, { ...options, passive: false })
+    window.addEventListener("keydown", navigate, options)
+
+    for (const type of PRESS_EVENTS) window.addEventListener(type, press, options)
   })
+}
+
+/**
+ * The elements from `inner` up to, but not including, `outer`: the way back down from
+ * `outer` to `inner`, with the first step last.
+ */
+function pathBetween(outer: Element, inner: Element): Element[] {
+  const path: Element[] = []
+
+  for (let element: Element | null = inner; element !== null && element !== outer;) {
+    path.push(element)
+    element = element.parentElement
+  }
+
+  return path
 }
