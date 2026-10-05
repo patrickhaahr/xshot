@@ -5,7 +5,23 @@
   "singleQuote": false,
   "tabWidth": 2,
   "trailingComma": "es5",
-  "printWidth": 80,
+  "printWidth": 100,
   "sortPackageJson": false,
-  "ignorePatterns": [".devenv/**", ".direnv/**", "dist/**"]
+  "ignorePatterns": [
+    ".devenv/**",
+    ".direnv/**",
+    "dist/**",
+    ".agent/**",
+    ".agents/**",
+    ".claude/**",
+    ".codex/**",
+    ".continue/**",
+    ".cursor/**",
+    ".gemini/**",
+    ".opencode/**",
+    ".pi/**",
+    ".roo/**",
+    ".windsurf/**",
+    "tools/oxlint/anti-slop/**"
+  ]
 }
