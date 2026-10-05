@@ -1,5 +1,6 @@
 import type { CaptureResponse, Measurement, PageCommand, WorkerRequest } from "./messages"
-import { attempt } from "./prelude"
+import { attempt, err, ok } from "./prelude"
+import type { Result } from "./prelude"
 
 /** Every Capture has two image pixels per CSS pixel, whatever the screen's pixel ratio. */
 const CAPTURE_SCALE = 2
@@ -74,7 +75,7 @@ async function screenshot(
 
   if (measured._tag === "err") return failed("measure the Target", measured.error)
 
-  const { crop, devicePixelRatio } = measured.value
+  const { crop, devicePixelRatio, destination } = measured.value
 
   const shot = await attempt(
     chrome.debugger.sendCommand(debuggee, "Page.captureScreenshot", {
@@ -91,7 +92,70 @@ async function screenshot(
   // base64-encoded image, and the command resolved without an error.
   const { data } = shot.value as { readonly data: string }
 
-  return { _tag: "captured", pngBase64: data }
+  switch (destination._tag) {
+    case "clipboard":
+      // The page writes the Clipboard, which a service worker can't reach.
+      return { _tag: "captured", pngBase64: data }
+    case "download": {
+      const saved = await saveDownload({ pngBase64: data, filename: destination.filename })
+
+      if (saved._tag === "err") return failed("save the Download", saved.error)
+
+      return { _tag: "captured", pngBase64: data }
+    }
+  }
+}
+
+/**
+ * Save a PNG to the downloads folder without a Save As dialog, resolving once the file is
+ * written or the download has failed.
+ *
+ * A data: URL, because a service worker can't create blob: URLs; Chromium downloads data:
+ * URLs far larger than the 2 MB it allows elsewhere.
+ */
+async function saveDownload(input: {
+  readonly pngBase64: string
+  readonly filename: string
+}): Promise<Result<void, Error>> {
+  const started = await attempt(
+    chrome.downloads.download({
+      url: `data:image/png;base64,${input.pngBase64}`,
+      filename: input.filename,
+      saveAs: false,
+      conflictAction: "uniquify",
+    })
+  )
+
+  if (started._tag === "err") return started
+
+  return downloadFinished(started.value)
+}
+
+/** Resolve once a download has completed or been interrupted. */
+function downloadFinished(downloadId: number): Promise<Result<void, Error>> {
+  return new Promise((resolve) => {
+    function settle(state: string, error: string | undefined): void {
+      if (state === "in_progress") return
+      chrome.downloads.onChanged.removeListener(follow)
+      resolve(state === "complete" ? ok(undefined) : err(new Error(error ?? "it was interrupted")))
+    }
+
+    function follow(delta: chrome.downloads.DownloadDelta): void {
+      const state = delta.state?.current
+
+      if (delta.id !== downloadId || state === undefined) return
+      settle(state, delta.error?.current)
+    }
+
+    chrome.downloads.onChanged.addListener(follow)
+
+    // The download can finish before the listener is added. Settling twice is harmless.
+    void attempt(chrome.downloads.search({ id: downloadId })).then((found) => {
+      if (found._tag === "ok" && found.value[0] !== undefined) {
+        settle(found.value[0].state, found.value[0].error)
+      }
+    })
+  })
 }
 
 function failed(step: string, error: Error): CaptureResponse {

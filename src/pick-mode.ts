@@ -1,3 +1,4 @@
+import type { Destination } from "./capture-plan"
 import { mountOverlay } from "./overlay"
 
 const HIGHLIGHT_CSS = `
@@ -35,10 +36,18 @@ const PRESS_EVENTS = [
   "dblclick",
 ] as const
 
+/** A click chose the highlighted element as the Target. */
+export type Picked = {
+  readonly _tag: "picked"
+  readonly target: Element
+
+  /** A Download for Shift+click, the Clipboard for a plain click. */
+  readonly destination: Destination
+}
+
 /** How Pick mode ended. */
 export type PickOutcome =
-  /** A click chose the highlighted element as the Target. */
-  | { readonly _tag: "picked"; readonly target: Element }
+  | Picked
   /** Escape left Pick mode without choosing anything. */
   | { readonly _tag: "cancelled" }
 
@@ -51,7 +60,7 @@ export type PickOutcome =
  * nor the wheel scroll it. When the promise resolves, the highlight and every listener are
  * gone, so the page behaves as before.
  *
- * @returns The element the user chose, or that they cancelled.
+ * @returns The element the user chose and where its Capture goes, or that they cancelled.
  */
 export function pick(): Promise<PickOutcome> {
   const overlay = mountOverlay({ name: "xshot-pick-mode", css: HIGHLIGHT_CSS })
@@ -159,7 +168,13 @@ export function pick(): Promise<PickOutcome> {
       if (event.type !== "click") return
       follow(event)
 
-      if (highlighted !== null) finish({ _tag: "picked", target: highlighted })
+      if (highlighted === null) return
+
+      finish({
+        _tag: "picked",
+        target: highlighted,
+        destination: event.shiftKey ? "download" : "clipboard",
+      })
     }
 
     function navigate(event: KeyboardEvent): void {

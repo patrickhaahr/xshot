@@ -57,8 +57,84 @@ test("a Pick Capture crops the whole picked element in document coordinates, bey
     y: 1200,
   })
 
-  const plan = planCapture({ start: { _tag: "pick", element: figure }, layout })
+  const plan = planCapture({
+    start: { _tag: "pick", element: figure },
+    destination: "clipboard",
+    url: new URL("https://en.wikipedia.org/wiki/Screenshot"),
+    now: new Date(2026, 9, 5, 12, 38, 42),
+    layout,
+  })
 
   expect(plan.target).toBe(figure)
   expect(plan.crop).toEqual({ x: 960.25, y: 899.5, width: 222, height: 1800.75 })
+})
+
+test("a Pick Capture to a Download is named after the site and the local time it was taken", async () => {
+  const page = await loadSavedPage("wikipedia-screenshot.html")
+  const figure = select(page, "figure#mwBQ")
+
+  const plan = planCapture({
+    start: { _tag: "pick", element: figure },
+    destination: "download",
+    url: new URL("https://en.wikipedia.org/wiki/Screenshot"),
+    // Built from local date parts, so the expected name holds in any time zone.
+    now: new Date(2026, 9, 5, 9, 8, 7),
+    layout: layoutOf([], { x: 0, y: 0 }),
+  })
+
+  expect(plan.destination).toEqual({
+    _tag: "download",
+    filename: "xshot-en.wikipedia.org-20261005-090807.png",
+  })
+})
+
+test("a Pick Capture to the Clipboard has no filename", async () => {
+  const page = await loadSavedPage("wikipedia-screenshot.html")
+  const figure = select(page, "figure#mwBQ")
+
+  const plan = planCapture({
+    start: { _tag: "pick", element: figure },
+    destination: "clipboard",
+    url: new URL("https://en.wikipedia.org/wiki/Screenshot"),
+    now: new Date(2026, 9, 5, 9, 8, 7),
+    layout: layoutOf([], { x: 0, y: 0 }),
+  })
+
+  expect(plan.destination).toEqual({ _tag: "clipboard" })
+})
+
+test("a Download's site leaves out a leading www.", async () => {
+  const page = await loadSavedPage("wikipedia-screenshot.html")
+  const figure = select(page, "figure#mwBQ")
+
+  const plan = planCapture({
+    start: { _tag: "pick", element: figure },
+    destination: "download",
+    url: new URL("https://www.wikipedia.org/"),
+    now: new Date(2026, 11, 31, 23, 59, 59),
+    layout: layoutOf([], { x: 0, y: 0 }),
+  })
+
+  expect(plan.destination).toEqual({
+    _tag: "download",
+    filename: "xshot-wikipedia.org-20261231-235959.png",
+  })
+})
+
+test("a Download from a page without a host name is named after the page", async () => {
+  const page = await loadSavedPage("wikipedia-screenshot.html")
+  const figure = select(page, "figure#mwBQ")
+
+  const plan = planCapture({
+    start: { _tag: "pick", element: figure },
+    destination: "download",
+    url: new URL("file:///home/me/wikipedia-screenshot.html"),
+    now: new Date(2026, 0, 1, 0, 0, 0),
+    layout: layoutOf([], { x: 0, y: 0 }),
+  })
+
+  expect(plan.destination).toEqual({
+    _tag: "download",
+    filename: "xshot-page-20260101-000000.png",
+  })
 })

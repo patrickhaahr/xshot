@@ -62,12 +62,32 @@ export async function showConfirmation(png: Blob, message: string): Promise<void
   thumbnail.getContext("2d")?.drawImage(image, 0, 0, thumbnail.width, thumbnail.height)
   image.close()
 
-  const text = document.createElement("span")
-  text.textContent = message
+  show([thumbnail, text(message)])
+}
+
+/**
+ * Show a Confirmation that nothing was delivered, without a thumbnail, so an image from an
+ * earlier Capture isn't mistaken for this one. Replaces any earlier Confirmation.
+ *
+ * @param reason - Why nothing was delivered, such as a failed Clipboard write.
+ */
+export function showFailure(reason: string): void {
+  show([text(reason)])
+}
+
+function text(message: string): HTMLSpanElement {
+  const span = document.createElement("span")
+  span.textContent = message
+
+  return span
+}
+
+/** Show a Confirmation card with the given contents for a few seconds. */
+function show(contents: ReadonlyArray<HTMLElement>): void {
   const card = document.createElement("div")
   card.className = "confirmation"
   card.setAttribute("role", "status")
-  card.append(thumbnail, text)
+  card.append(...contents)
 
   dismissConfirmation()
   const overlay = mountOverlay({ name: "xshot-confirmation", css: CONFIRMATION_CSS })
