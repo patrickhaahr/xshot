@@ -164,6 +164,7 @@ function targetOf(input: {
 }
 
 function planDestination(input: {
+  readonly start: CaptureStart
   readonly destination: Destination
   readonly url: URL
   readonly now: Date
@@ -172,7 +173,26 @@ function planDestination(input: {
     case "clipboard":
       return { _tag: "clipboard" }
     case "download":
-      return { _tag: "download", filename: `xshot-${site(input.url)}-${timestamp(input.now)}.png` }
+      return { _tag: "download", filename: downloadFilename(input) }
+  }
+}
+
+/**
+ * A Download's filename: a Post Capture is named after the right-clicked Post, a Pick Capture
+ * after the site and the local time it was taken.
+ */
+function downloadFilename(input: {
+  readonly start: CaptureStart
+  readonly url: URL
+  readonly now: Date
+}): string {
+  const { start } = input
+
+  switch (start._tag) {
+    case "pick":
+      return `xshot-${site(input.url)}-${timestamp(input.now)}.png`
+    case "post":
+      return `xshot-${start.post.handle}-${start.post.postId}.png`
   }
 }
 

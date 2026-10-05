@@ -332,6 +332,26 @@ test("a Post Capture finds the Focal post below an unavailable Post's placeholde
   expectSameElement(plan.target, focalPost)
 })
 
+test("a Post Capture to a Download is named after the right-clicked Post's handle and id", async () => {
+  const page = await loadSavedPage("x-status-deep-reply.html")
+
+  const plan = planOf(
+    planCapture({
+      page,
+      start: { _tag: "post", post: { handle: "BrandonLuuMD", postId: "2100910333376278960" } },
+      destination: "download",
+      url: new URL("https://x.com/BrandonLuuMD/status/2100910333376278960"),
+      now: new Date(2026, 9, 5, 12, 38, 42),
+      layout: layoutOf([], { x: 0, y: 0 }),
+    })
+  )
+
+  expect(plan.destination).toEqual({
+    _tag: "download",
+    filename: "xshot-BrandonLuuMD-2100910333376278960.png",
+  })
+})
+
 test("a Post Capture is refused when the status page's Focal post is another Post", async () => {
   const page = await loadSavedPage("x-status-quote.html")
 
