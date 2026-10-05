@@ -10,7 +10,8 @@ const SETTLE_QUIET_MS = 300
 /** The longest wait for the viewport to settle before measuring anyway. */
 const SETTLE_LIMIT_MS = 2000
 
-let picking = false
+/** Whether Pick mode or its Capture is under way; a second Pick mode would put its highlight in the Capture. */
+let busy = false
 
 chrome.runtime.onMessage.addListener(
   (command: PageCommand, _sender: chrome.runtime.MessageSender, sendResponse: () => void) => {
@@ -25,15 +26,26 @@ chrome.runtime.onMessage.addListener(
 )
 
 async function pickAndCapture(): Promise<void> {
-  if (picking) return
-  picking = true
+  if (busy) return
+  busy = true
+
+  try {
+    await pickThenCapture()
+  } finally {
+    busy = false
+  }
+}
+
+async function pickThenCapture(): Promise<void> {
+  // Removed before the highlight appears, so no Confirmation is on the page during a Capture.
   dismissConfirmation()
-  const target = await pick()
-  picking = false
+  const picked = await pick()
+
+  if (picked._tag === "cancelled") return
 
   // The write starts right away, while the choosing click still counts as user activation and
   // the page has focus; the Clipboard takes the image once the worker has captured it.
-  const png = capture(target)
+  const png = capture(picked.target)
 
   const written = await attempt(
     navigator.clipboard.write([new ClipboardItem({ "image/png": png })])
