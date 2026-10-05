@@ -4,7 +4,6 @@ import { GlobalRegistrator } from "@happy-dom/global-registrator"
 
 import { planCapture, startPostCapture } from "./capture-plan"
 import type { CapturePlan, CaptureRefusal, Layout, Rect } from "./capture-plan"
-import type { PostRef } from "./x-markup"
 
 // Never pass an Element to expect(), not even to toBe: when the assertion fails, bun formats
 // the happy-dom node with the whole DOM graph behind it, which exhausts memory. Compare
@@ -531,6 +530,117 @@ test("right-clicking an unavailable Post's placeholder is refused as No Post her
   expect(startPostCapture(placeholder)).toEqual({ _tag: "err", error: { _tag: "no-post" } })
 })
 
+test("a Post Capture lists the Truncated text of a Post above the Focal post to expand", async () => {
+  const page = await loadSavedPage("x-status-truncated-ancestor.html")
+  // The kyr0stack Post the Focal post replies to ends in "Show more".
+  const showMore = select(page, '[data-testid="tweet-text-show-more-link"]')
+
+  const plan = planOf(
+    planCapture({
+      page,
+      start: { _tag: "post", post: { handle: "PythonDvz", postId: "2106911614041764004" } },
+      destination: "clipboard",
+      url: new URL("https://x.com/PythonDvz/status/2106911614041764004"),
+      now: new Date(2026, 9, 5, 12, 38, 42),
+      layout: layoutOf([], { x: 0, y: 0 }),
+    })
+  )
+
+  expect(plan.expand.length).toBe(1)
+  expectSameElement(plan.expand[0], showMore)
+})
+
+/** A Post Capture of a saved status page's Focal post, with no layout. */
+async function planPostCapture(
+  name: string,
+  post: { readonly handle: string; readonly postId: string }
+): Promise<CapturePlan> {
+  const page = await loadSavedPage(name)
+
+  return planOf(
+    planCapture({
+      page,
+      start: { _tag: "post", post },
+      destination: "clipboard",
+      url: new URL(`https://x.com/${post.handle}/status/${post.postId}`),
+      now: new Date(2026, 9, 5, 12, 38, 42),
+      layout: layoutOf([], { x: 0, y: 0 }),
+    })
+  )
+}
+
+test("a Post Capture with Truncated text still to expand is a Partial Capture", async () => {
+  // Planned again after expanding, the plan still finds "Show more" when expanding failed.
+  const plan = await planPostCapture("x-status-truncated-ancestor.html", {
+    handle: "PythonDvz",
+    postId: "2106911614041764004",
+  })
+
+  expect(plan.warnings).toEqual([{ _tag: "not-expanded" }])
+})
+
+test("a Post Capture expands nothing once the Truncated text is shown in full", async () => {
+  const plan = await planPostCapture("x-status-truncated-ancestor-expanded.html", {
+    handle: "PythonDvz",
+    postId: "2106911614041764004",
+  })
+
+  expect(plan.expand.length).toBe(0)
+  expect(plan.warnings).toEqual([])
+})
+
+test("a Post Capture leaves Truncated Replies below the Focal post alone", async () => {
+  // The long Focal post is shown in full; two Replies below it end in "Show more".
+  const plan = await planPostCapture("x-status-long.html", {
+    handle: "_katetolo",
+    postId: "2106820447300198810",
+  })
+
+  expect(plan.expand.length).toBe(0)
+})
+
+test("a Post Capture whose quoted post X has cut off is a Partial Capture", async () => {
+  // X shows only the first 276 characters of the quoted Mikkel_Bjorn post, ending mid-sentence
+  // in "Næsten 40% er fra", and offers no "Show more" to expand it.
+  const plan = await planPostCapture("x-status-quote.html", {
+    handle: "AllanFeldt_",
+    postId: "2107159689482100881",
+  })
+
+  expect(plan.expand.length).toBe(0)
+  expect(plan.warnings).toEqual([{ _tag: "quoted-post-cut-off" }])
+})
+
+test("a Post Capture with a short quoted post is complete", async () => {
+  // The quoted post reads "France has fallen." in full.
+  const plan = await planPostCapture("x-status-quote-community-note.html", {
+    handle: "pepelkoklisarot",
+    postId: "2107035042731999591",
+  })
+
+  expect(plan.warnings).toEqual([])
+})
+
+test("a Pick Capture leaves Truncated text as rendered", async () => {
+  const page = await loadSavedPage("x-truncated.html")
+  // The kyr0stack Post in the timeline ends in "Show more".
+  const truncatedPost = select(page, 'article:has(a[href="/kyr0stack/status/2106836875688435747"])')
+
+  const plan = planOf(
+    planCapture({
+      page,
+      start: { _tag: "pick", element: truncatedPost },
+      destination: "clipboard",
+      url: new URL("https://x.com/home"),
+      now: new Date(2026, 9, 5, 12, 38, 42),
+      layout: layoutOf([], { x: 0, y: 0 }),
+    })
+  )
+
+  expect(plan.expand.length).toBe(0)
+  expect(plan.warnings).toEqual([])
+})
+
 /**
  * How many elements matching `selector` the Capture shows: those in the Target's elements,
  * these included, that aren't inside Clutter the plan removes.
@@ -551,24 +661,8 @@ function isShown(plan: CapturePlan, element: Element): boolean {
   )
 }
 
-/** Plan a Post Capture of the Focal post of a saved status page. */
-async function planFocalPostCapture(name: string, post: PostRef): Promise<CapturePlan> {
-  const page = await loadSavedPage(name)
-
-  return planOf(
-    planCapture({
-      page,
-      start: { _tag: "post", post },
-      destination: "clipboard",
-      url: new URL(`https://x.com/${post.handle}/status/${post.postId}`),
-      now: new Date(2026, 9, 5, 12, 38, 42),
-      layout: layoutOf([], { x: 0, y: 0 }),
-    })
-  )
-}
-
 test("a Post Capture removes the '…' menu and Grok actions buttons of every Post in the Conversation", async () => {
-  const plan = await planFocalPostCapture("x-status-deep-reply.html", {
+  const plan = await planPostCapture("x-status-deep-reply.html", {
     handle: "BrandonLuuMD",
     postId: "2100910333376278960",
   })
@@ -581,7 +675,7 @@ test("a Post Capture removes the '…' menu and Grok actions buttons of every Po
 })
 
 test("a Post Capture removes the 'Show translation' button together with its icon", async () => {
-  const plan = await planFocalPostCapture("x-status-quote.html", {
+  const plan = await planPostCapture("x-status-quote.html", {
     handle: "AllanFeldt_",
     postId: "2107159689482100881",
   })
@@ -597,7 +691,7 @@ test("a Post Capture removes the 'Show translation' button together with its ico
 })
 
 test("a Post Capture keeps the engagement counts, the timestamp and the community note", async () => {
-  const plan = await planFocalPostCapture("x-status-community-note.html", {
+  const plan = await planPostCapture("x-status-community-note.html", {
     handle: "realDonaldTrump",
     postId: "2106395048015282265",
   })
@@ -612,7 +706,7 @@ test("a Post Capture keeps the engagement counts, the timestamp and the communit
 })
 
 test("a Post Capture keeps a community note inside the quoted post", async () => {
-  const plan = await planFocalPostCapture("x-status-quote-community-note.html", {
+  const plan = await planPostCapture("x-status-quote-community-note.html", {
     handle: "pepelkoklisarot",
     postId: "2107035042731999591",
   })

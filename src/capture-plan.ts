@@ -4,10 +4,12 @@ import {
   clutterIn,
   containsPost,
   conversationOf,
+  cutOffQuotedPostsIn,
   focalPost,
   isPlaceholder,
   postContaining,
   postRefOf,
+  showMoreIn,
 } from "./x-markup"
 import type { PostRef } from "./x-markup"
 
@@ -81,6 +83,12 @@ export type CapturePlan = {
   /** Where the Capture is delivered. */
   readonly destination: DestinationPlan
 
+  /**
+   * The Truncated text to expand before a Post Capture: X's "Show more" controls, which the
+   * page clicks. A Pick Capture shows Truncated text as rendered, so it expands nothing.
+   */
+  readonly expand: ReadonlyArray<Element>
+
   /** Why the Capture is a Partial Capture; empty when it is complete. */
   readonly warnings: ReadonlyArray<CaptureWarning>
 }
@@ -91,7 +99,11 @@ export type Target = readonly [Element, ...Element[]]
 /** Why a Capture is a Partial Capture: it is still delivered, with this warning. */
 export type CaptureWarning =
   /** The Conversation has Posts X shows only as a placeholder, such as unavailable or deleted Posts. */
-  { readonly _tag: "unavailable-posts"; readonly count: number }
+  | { readonly _tag: "unavailable-posts"; readonly count: number }
+  /** Truncated text that expanding didn't show in full, or not in time. */
+  | { readonly _tag: "not-expanded" }
+  /** A quoted post whose text X shows only the start of, with no way to expand it. */
+  | { readonly _tag: "quoted-post-cut-off" }
 
 /** Why no Capture is taken. */
 export type CaptureRefusal =
@@ -168,6 +180,7 @@ export function planCapture(input: {
       height: bounds.height,
     },
     destination: planDestination(input),
+    expand: input.start._tag === "post" ? showMoreIn(target) : [],
     warnings: warningsOf({ start: input.start, target }),
   })
 }
@@ -200,7 +213,9 @@ function targetOf(input: {
 
 /**
  * Why the Capture is a Partial Capture. A Pick Capture shows what was picked as rendered, so
- * only a Post Capture's Conversation is checked for Posts X couldn't show.
+ * only a Post Capture's Conversation is checked for Posts X couldn't show and for text it
+ * shortened. A Post Capture is planned again after expanding, so Truncated text still there
+ * then is text that expanding failed to show.
  */
 function warningsOf(input: {
   readonly start: CaptureStart
@@ -208,9 +223,18 @@ function warningsOf(input: {
 }): ReadonlyArray<CaptureWarning> {
   if (input.start._tag === "pick") return []
 
+  const warnings: CaptureWarning[] = []
   const unavailable = input.target.filter(isPlaceholder).length
 
-  return unavailable === 0 ? [] : [{ _tag: "unavailable-posts", count: unavailable }]
+  if (unavailable > 0) warnings.push({ _tag: "unavailable-posts", count: unavailable })
+
+  if (showMoreIn(input.target).length > 0) warnings.push({ _tag: "not-expanded" })
+
+  if (cutOffQuotedPostsIn(input.target).length > 0) {
+    warnings.push({ _tag: "quoted-post-cut-off" })
+  }
+
+  return warnings
 }
 
 /** The smallest rectangle around all of the given rectangles. */
