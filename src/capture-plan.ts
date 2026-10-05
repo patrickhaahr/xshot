@@ -1,3 +1,6 @@
+import { err, ok } from "./prelude"
+import type { Result } from "./prelude"
+
 /** A rectangle in CSS pixels. */
 export type Rect = {
   readonly x: number
@@ -50,12 +53,26 @@ export type CapturePlan = {
   readonly destination: DestinationPlan
 }
 
+/** Why no Capture is taken. */
+export type CaptureRefusal =
+  /** The Target is too tall to fit in one image at full sharpness. */
+  { readonly _tag: "oversized" }
+
+/** Every Capture has two image pixels per CSS pixel, whatever the screen's pixel ratio. */
+export const CAPTURE_SCALE = 2
+
 /**
- * Decide what a Capture shows and which part of the page to crop.
+ * The tallest image Chromium produces, its maximum texture size. Above it the screenshot
+ * repeats content instead of failing, so a taller Target is refused rather than captured.
+ */
+const MAX_IMAGE_HEIGHT = 16_384
+
+/**
+ * Decide what a Capture shows and which part of the page to crop, or why there is no Capture.
  *
  * @param input - How the Capture was started, where it goes, the page's address, the current
  *   time and the page layout to measure it in.
- * @returns The plan for the Capture.
+ * @returns The plan for the Capture, or the reason it is refused.
  */
 export function planCapture(input: {
   readonly start: CaptureStart
@@ -67,12 +84,14 @@ export function planCapture(input: {
   /** When the Capture was taken; a Download's filename gives it in local time. */
   readonly now: Date
   readonly layout: Layout
-}): CapturePlan {
+}): Result<CapturePlan, CaptureRefusal> {
   const { start, layout } = input
   const target = start.element
   const bounds = layout.boundsOf(target)
 
-  return {
+  if (bounds.height * CAPTURE_SCALE > MAX_IMAGE_HEIGHT) return err({ _tag: "oversized" })
+
+  return ok({
     target,
     crop: {
       x: bounds.x + layout.scroll.x,
@@ -81,7 +100,7 @@ export function planCapture(input: {
       height: bounds.height,
     },
     destination: planDestination(input),
-  }
+  })
 }
 
 function planDestination(input: {

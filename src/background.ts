@@ -1,9 +1,7 @@
+import { CAPTURE_SCALE } from "./capture-plan"
 import type { CaptureResponse, Measurement, PageCommand, WorkerRequest } from "./messages"
 import { attempt, err, ok } from "./prelude"
 import type { Result } from "./prelude"
-
-/** Every Capture has two image pixels per CSS pixel, whatever the screen's pixel ratio. */
-const CAPTURE_SCALE = 2
 
 chrome.action.onClicked.addListener((tab) => {
   if (tab.id === undefined) return
@@ -74,6 +72,8 @@ async function screenshot(
   )
 
   if (measured._tag === "err") return failed("measure the Target", measured.error)
+
+  if (measured.value._tag === "refused") return measured.value
 
   const { crop, devicePixelRatio, destination } = measured.value
 

@@ -1,5 +1,7 @@
+import type { CaptureRefusal } from "./capture-plan"
 import { mountOverlay } from "./overlay"
 import type { Overlay } from "./overlay"
+import { casesHandled } from "./prelude"
 
 /** How long a Confirmation stays on the page. */
 const VISIBLE_MS = 3000
@@ -73,6 +75,26 @@ export async function showConfirmation(png: Blob, message: string): Promise<void
  */
 export function showFailure(reason: string): void {
   show([text(reason)])
+}
+
+/**
+ * Show a Confirmation explaining why the Capture plan refused the Target, without a
+ * thumbnail. Replaces any earlier Confirmation.
+ *
+ * @param refusal - Why nothing was captured.
+ */
+export function showRefusal(refusal: CaptureRefusal): void {
+  switch (refusal._tag) {
+    case "oversized":
+      show([
+        text("Too tall to capture in one image."),
+        text("Use Pick mode to capture a smaller part."),
+      ])
+
+      return
+    default:
+      casesHandled(refusal._tag)
+  }
 }
 
 function text(message: string): HTMLSpanElement {
