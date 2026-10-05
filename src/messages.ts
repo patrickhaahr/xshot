@@ -2,7 +2,7 @@
 // send runtime messages (the manifest has no `externally_connectable`), and both sides type
 // their sends and listeners with these definitions, so a received message has this form.
 
-import type { Rect } from "./capture-plan"
+import type { DestinationPlan, Rect } from "./capture-plan"
 
 /** A command the background worker sends to the page script. */
 export type PageCommand =
@@ -11,18 +11,24 @@ export type PageCommand =
   /** The debugger is attached: wait for the viewport to settle, then measure the Target. */
   | { readonly type: "measure" }
 
-/** The Target's crop, measured in the page once the viewport has settled. */
+/** The Target's crop, measured in the page once the viewport has settled, and where it goes. */
 export type Measurement = {
   readonly crop: Rect
 
   /** `window.devicePixelRatio`, which Chromium multiplies into every screenshot. */
   readonly devicePixelRatio: number
+
+  /** Where the Capture is delivered: the worker saves a Download, the page fills the Clipboard. */
+  readonly destination: DestinationPlan
 }
 
 /** A request the page script sends to the background worker. */
 export type WorkerRequest = { readonly type: "capture" }
 
-/** The background worker's answer to a capture request. */
+/**
+ * The background worker's answer to a capture request. A Download is already saved when the
+ * answer is "captured"; the image comes back for the Clipboard and the Confirmation.
+ */
 export type CaptureResponse =
   | { readonly _tag: "captured"; readonly pngBase64: string }
   | { readonly _tag: "failed"; readonly reason: string }
