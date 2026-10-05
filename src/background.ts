@@ -1,28 +1,44 @@
 import { CAPTURE_SCALE } from "./capture-plan"
+import type { Destination } from "./capture-plan"
 import type { CaptureResponse, Measurement, PageCommand, WorkerRequest } from "./messages"
 import { attempt, err, ok } from "./prelude"
 import type { Result } from "./prelude"
 import { X_PAGES, statusPageUrl } from "./x-markup"
 
-/** The right-click menu item that captures a Post to the Clipboard. */
-const SCREENSHOT_POST = "screenshot-post"
+/** The right-click menu items that start a Post Capture, each to its own Destination. */
+const POST_MENU_ITEMS: ReadonlyArray<{
+  readonly id: string
+  readonly title: string
+  readonly destination: Destination
+}> = [
+  { id: "screenshot-post", title: "Screenshot post", destination: "clipboard" },
+  { id: "screenshot-post-to-file", title: "Screenshot post to file", destination: "download" },
+]
 
 /** The longest wait for a Post's status page to load in its background tab. */
 const STATUS_PAGE_LOAD_LIMIT_MS = 30_000
 
 chrome.runtime.onInstalled.addListener(() => {
-  chrome.contextMenus.create({
-    id: SCREENSHOT_POST,
-    title: "Screenshot post",
-    // Everything a Post can contain; "all" would also add it to the toolbar button's menu.
-    contexts: ["page", "selection", "link", "image", "video", "editable"],
-    documentUrlPatterns: X_PAGES,
-  })
+  for (const { id, title } of POST_MENU_ITEMS) {
+    chrome.contextMenus.create({
+      id,
+      title,
+      // Everything a Post can contain; "all" would also add it to the toolbar button's menu.
+      contexts: ["page", "selection", "link", "image", "video", "editable"],
+      documentUrlPatterns: X_PAGES,
+    })
+  }
 })
 
 chrome.contextMenus.onClicked.addListener((info, tab) => {
-  if (info.menuItemId !== SCREENSHOT_POST || tab?.id === undefined) return
-  void startPostCapture({ tabId: tab.id, frameId: info.frameId ?? 0 })
+  const item = POST_MENU_ITEMS.find(({ id }) => id === info.menuItemId)
+
+  if (item === undefined || tab?.id === undefined) return
+  void startPostCapture({
+    tabId: tab.id,
+    frameId: info.frameId ?? 0,
+    destination: item.destination,
+  })
 })
 
 chrome.action.onClicked.addListener((tab) => {
@@ -61,13 +77,14 @@ chrome.runtime.onMessage.addListener(
 async function startPostCapture(input: {
   readonly tabId: number
   readonly frameId: number
+  readonly destination: Destination
 }): Promise<void> {
   // The page script runs on every X page from the manifest, so it saw the right-click. It is
   // missing only from X tabs opened before XShot was installed or reloaded.
   const delivered = await attempt(
     chrome.tabs.sendMessage<PageCommand>(
       input.tabId,
-      { type: "start-post-capture", destination: "clipboard" },
+      { type: "start-post-capture", destination: input.destination },
       { frameId: input.frameId }
     )
   )
@@ -209,7 +226,7 @@ async function screenshot(input: {
 
   if (measured.value._tag === "refused") return measured.value
 
-  const { crop, devicePixelRatio, destination } = measured.value
+  const { crop, devicePixelRatio, destination, warnings } = measured.value
 
   const shot = await attempt(
     chrome.debugger.sendCommand(debuggee, "Page.captureScreenshot", {
@@ -229,13 +246,13 @@ async function screenshot(input: {
   switch (destination._tag) {
     case "clipboard":
       // The page writes the Clipboard, which a service worker can't reach.
-      return { _tag: "captured", pngBase64: data }
+      return { _tag: "captured", pngBase64: data, warnings }
     case "download": {
       const saved = await saveDownload({ pngBase64: data, filename: destination.filename })
 
       if (saved._tag === "err") return failed("save the Download", saved.error)
 
-      return { _tag: "captured", pngBase64: data }
+      return { _tag: "captured", pngBase64: data, warnings }
     }
   }
 }

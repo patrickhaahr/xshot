@@ -5,7 +5,7 @@ import type { CaptureResponse, Measurement, PageCommand, WorkerRequest } from ".
 import { pick } from "./pick-mode"
 import type { Picked } from "./pick-mode"
 import { attempt } from "./prelude"
-import { focalPost } from "./x-markup"
+import { conversationOf, focalPost } from "./x-markup"
 
 /** How long the viewport must go without resizing before the Target is measured. */
 const SETTLE_QUIET_MS = 300
@@ -140,7 +140,7 @@ async function copyToClipboard(response: Promise<CaptureResponse>): Promise<void
     return showFailure(`Couldn't copy to the Clipboard: ${written.error.message}`)
   }
 
-  await showConfirmation(await png, "Copied to Clipboard")
+  await showConfirmation(await png, "Copied to Clipboard", captured.warnings)
 }
 
 async function confirmDownload(response: Promise<CaptureResponse>): Promise<void> {
@@ -153,7 +153,11 @@ async function confirmDownload(response: Promise<CaptureResponse>): Promise<void
     case "failed":
       return showFailure(captured.reason)
     case "captured":
-      return showConfirmation(pngFromBase64(captured.pngBase64), "Saved to Downloads")
+      return showConfirmation(
+        pngFromBase64(captured.pngBase64),
+        "Saved to Downloads",
+        captured.warnings
+      )
   }
 }
 
@@ -215,15 +219,16 @@ async function requestCapture(request: WorkerRequest): Promise<CaptureResponse> 
 }
 
 /**
- * Measure a Post Capture on the Post's status page, once X has rendered the Focal post and its
- * images. X renders the page after it loads, so the Focal post can appear seconds later.
+ * Measure a Post Capture on the Post's status page, once X has rendered the Focal post and the
+ * images of its Conversation. X renders the page after it loads, so the Focal post can appear
+ * seconds later; the Posts above it arrive with it.
  */
 async function measurePostWhenRendered(
   command: Extract<PageCommand, { readonly type: "measure-post" }>
 ): Promise<Measurement> {
   const focal = await rendered(() => focalPost(document), FOCAL_POST_LIMIT_MS)
 
-  if (focal !== null) await imagesLoaded(focal)
+  if (focal !== null) await Promise.all(conversationOf(focal).map(imagesLoaded))
 
   // The Clutter stays out of the layout: the worker closes this background tab after capturing.
   const { measurement } = await measureWhenSettled({
@@ -280,10 +285,16 @@ async function measureWhenSettled(input: {
     return { measurement: { _tag: "refused", refusal: planned.error }, restore: () => {} }
   }
 
-  const { crop, destination } = planned.value
+  const { crop, destination, warnings } = planned.value
 
   return {
-    measurement: { _tag: "measured", crop, devicePixelRatio: window.devicePixelRatio, destination },
+    measurement: {
+      _tag: "measured",
+      crop,
+      devicePixelRatio: window.devicePixelRatio,
+      destination,
+      warnings,
+    },
     restore,
   }
 }

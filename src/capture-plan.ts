@@ -1,6 +1,14 @@
 import { err, ok } from "./prelude"
 import type { Result } from "./prelude"
-import { clutterIn, containsPost, focalPost, postContaining, postRefOf } from "./x-markup"
+import {
+  clutterIn,
+  containsPost,
+  conversationOf,
+  focalPost,
+  isPlaceholder,
+  postContaining,
+  postRefOf,
+} from "./x-markup"
 import type { PostRef } from "./x-markup"
 
 /** A rectangle in CSS pixels. */
@@ -49,17 +57,22 @@ export type Layout = {
 
 /** What a Capture shows and where it is on the page. */
 export type CapturePlan = {
-  /** What the Capture shows. */
-  readonly target: Element
+  /**
+   * What the Capture shows, top to bottom: the picked element, or the Conversation from its
+   * root Post down to the Focal post.
+   */
+  readonly target: Target
 
   /**
    * Page interface inside the Target that isn't content. It is taken out of the layout before
-   * the Target is measured, so it leaves no gap. Empty unless the Target is or contains a Post.
+   * the Target is measured, so it leaves no gap. Only Target elements that are or contain a
+   * Post have any.
    */
   readonly clutter: ReadonlyArray<Element>
 
   /**
-   * The Target's full border box in document coordinates, however much of it is on screen.
+   * The Target's full border box in document coordinates, however much of it is on screen. A
+   * Conversation's box spans from its first Post's top to the Focal post's bottom.
    * Fractions are kept: the debugger's screenshot clip takes fractional CSS pixels and
    * rounds only when it produces the image.
    */
@@ -67,7 +80,18 @@ export type CapturePlan = {
 
   /** Where the Capture is delivered. */
   readonly destination: DestinationPlan
+
+  /** Why the Capture is a Partial Capture; empty when it is complete. */
+  readonly warnings: ReadonlyArray<CaptureWarning>
 }
+
+/** The elements a Capture shows, top to bottom; there is always at least one. */
+export type Target = readonly [Element, ...Element[]]
+
+/** Why a Capture is a Partial Capture: it is still delivered, with this warning. */
+export type CaptureWarning =
+  /** The Conversation has Posts X shows only as a placeholder, such as unavailable or deleted Posts. */
+  { readonly _tag: "unavailable-posts"; readonly count: number }
 
 /** Why no Capture is taken. */
 export type CaptureRefusal =
@@ -130,13 +154,13 @@ export function planCapture(input: {
   if (targeted._tag === "err") return targeted
 
   const target = targeted.value
-  const bounds = layout.boundsOf(target)
+  const bounds = boundsAround(target.map(layout.boundsOf))
 
   if (bounds.height * CAPTURE_SCALE > MAX_IMAGE_HEIGHT) return err({ _tag: "oversized" })
 
   return ok({
     target,
-    clutter: containsPost(target) ? clutterIn(target) : [],
+    clutter: target.flatMap((element) => (containsPost(element) ? clutterIn(element) : [])),
     crop: {
       x: bounds.x + layout.scroll.x,
       y: bounds.y + layout.scroll.y,
@@ -144,19 +168,23 @@ export function planCapture(input: {
       height: bounds.height,
     },
     destination: planDestination(input),
+    warnings: warningsOf({ start: input.start, target }),
   })
 }
 
-/** What the Capture shows: the picked element, or the Focal post of the clicked Post's status page. */
+/**
+ * What the Capture shows: the picked element, or the Conversation ending at the Focal post of
+ * the clicked Post's status page.
+ */
 function targetOf(input: {
   readonly page: Document
   readonly start: CaptureStart
-}): Result<Element, CaptureRefusal> {
+}): Result<Target, CaptureRefusal> {
   const { page, start } = input
 
   switch (start._tag) {
     case "pick":
-      return ok(start.element)
+      return ok([start.element])
     case "post": {
       const focal = focalPost(page)
 
@@ -165,12 +193,38 @@ function targetOf(input: {
         return err({ _tag: "post-not-shown" })
       }
 
-      return ok(focal)
+      return ok(conversationOf(focal))
     }
   }
 }
 
+/**
+ * Why the Capture is a Partial Capture. A Pick Capture shows what was picked as rendered, so
+ * only a Post Capture's Conversation is checked for Posts X couldn't show.
+ */
+function warningsOf(input: {
+  readonly start: CaptureStart
+  readonly target: Target
+}): ReadonlyArray<CaptureWarning> {
+  if (input.start._tag === "pick") return []
+
+  const unavailable = input.target.filter(isPlaceholder).length
+
+  return unavailable === 0 ? [] : [{ _tag: "unavailable-posts", count: unavailable }]
+}
+
+/** The smallest rectangle around all of the given rectangles. */
+function boundsAround(rects: ReadonlyArray<Rect>): Rect {
+  const left = Math.min(...rects.map((rect) => rect.x))
+  const top = Math.min(...rects.map((rect) => rect.y))
+  const right = Math.max(...rects.map((rect) => rect.x + rect.width))
+  const bottom = Math.max(...rects.map((rect) => rect.y + rect.height))
+
+  return { x: left, y: top, width: right - left, height: bottom - top }
+}
+
 function planDestination(input: {
+  readonly start: CaptureStart
   readonly destination: Destination
   readonly url: URL
   readonly now: Date
@@ -179,7 +233,26 @@ function planDestination(input: {
     case "clipboard":
       return { _tag: "clipboard" }
     case "download":
-      return { _tag: "download", filename: `xshot-${site(input.url)}-${timestamp(input.now)}.png` }
+      return { _tag: "download", filename: downloadFilename(input) }
+  }
+}
+
+/**
+ * A Download's filename: a Post Capture is named after the right-clicked Post, a Pick Capture
+ * after the site and the local time it was taken.
+ */
+function downloadFilename(input: {
+  readonly start: CaptureStart
+  readonly url: URL
+  readonly now: Date
+}): string {
+  const { start } = input
+
+  switch (start._tag) {
+    case "pick":
+      return `xshot-${site(input.url)}-${timestamp(input.now)}.png`
+    case "post":
+      return `xshot-${start.post.handle}-${start.post.postId}.png`
   }
 }
 
