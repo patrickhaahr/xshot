@@ -11,7 +11,8 @@ const SETTLE_QUIET_MS = 300
 /** The longest wait for the viewport to settle before measuring anyway. */
 const SETTLE_LIMIT_MS = 2000
 
-let picking = false
+/** Whether Pick mode or its Capture is under way; a second Pick mode would put its highlight in the Capture. */
+let busy = false
 
 chrome.runtime.onMessage.addListener(
   (command: PageCommand, _sender: chrome.runtime.MessageSender, sendResponse: () => void) => {
@@ -26,11 +27,22 @@ chrome.runtime.onMessage.addListener(
 )
 
 async function pickAndCapture(): Promise<void> {
-  if (picking) return
-  picking = true
+  if (busy) return
+  busy = true
+
+  try {
+    await pickThenCapture()
+  } finally {
+    busy = false
+  }
+}
+
+async function pickThenCapture(): Promise<void> {
+  // Removed before the highlight appears, so no Confirmation is on the page during a Capture.
   dismissConfirmation()
   const picked = await pick()
-  picking = false
+
+  if (picked._tag === "cancelled") return
 
   switch (picked.destination) {
     case "clipboard":
@@ -111,7 +123,7 @@ async function measureWhenSettled(picked: Picked): Promise<Measurement> {
   await viewportSettled()
 
   const { crop, destination } = planCapture({
-    start: { _tag: "pick", element: picked.element },
+    start: { _tag: "pick", element: picked.target },
     destination: picked.destination,
     url: new URL(window.location.href),
     now: new Date(),
