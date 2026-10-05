@@ -2,11 +2,12 @@ import { afterAll, beforeAll, expect, test } from "bun:test"
 
 import { GlobalRegistrator } from "@happy-dom/global-registrator"
 
-import { planCapture } from "./capture-plan"
+import { planCapture, startPostCapture } from "./capture-plan"
 import type { CapturePlan, CaptureRefusal, Layout, Rect } from "./capture-plan"
 
-// Never compare Elements with toEqual: a failing diff of a happy-dom node formats the whole
-// DOM graph and can exhaust memory. Compare them with toBe and plain data with toEqual.
+// Never pass an Element to expect(), not even to toBe: when the assertion fails, bun formats
+// the happy-dom node with the whole DOM graph behind it, which exhausts memory. Compare
+// Elements with expectSameElement and plain data with toEqual.
 
 beforeAll(() => {
   GlobalRegistrator.register({
@@ -49,6 +50,22 @@ function layoutOf(
   }
 }
 
+/** Fail unless `actual` is `expected`, describing both briefly instead of formatting the DOM. */
+function expectSameElement(actual: Element | undefined, expected: Element): void {
+  if (actual === expected) return
+
+  throw new Error(`Expected ${describeElement(expected)}, got ${describeElement(actual)}`)
+}
+
+function describeElement(element: Element | undefined): string {
+  if (element === undefined) return "no element"
+
+  const testId = element.getAttribute("data-testid")
+  const text = (element.textContent ?? "").trim().slice(0, 60)
+
+  return `<${element.localName}${testId === null ? "" : ` data-testid="${testId}"`}> "${text}"`
+}
+
 function planOf(planned: ReturnType<typeof planCapture>): CapturePlan {
   if (planned._tag !== "ok") throw new Error(`Expected a plan, got ${planned.error._tag}`)
 
@@ -74,6 +91,7 @@ test("a Pick Capture crops the whole picked element in document coordinates, bey
 
   const plan = planOf(
     planCapture({
+      page,
       start: { _tag: "pick", element: figure },
       destination: "clipboard",
       url: new URL("https://en.wikipedia.org/wiki/Screenshot"),
@@ -82,7 +100,7 @@ test("a Pick Capture crops the whole picked element in document coordinates, bey
     })
   )
 
-  expect(plan.target).toBe(figure)
+  expectSameElement(plan.target, figure)
   expect(plan.crop).toEqual({ x: 960.25, y: 899.5, width: 222, height: 1800.75 })
 })
 
@@ -95,6 +113,7 @@ test("a Target over 8,192 CSS px tall is refused as Oversized", async () => {
 
   const refusal = refusalOf(
     planCapture({
+      page,
       start: { _tag: "pick", element: article },
       destination: "clipboard",
       url: new URL("https://en.wikipedia.org/wiki/Screenshot"),
@@ -113,6 +132,7 @@ test("a Target exactly 8,192 CSS px tall is planned", async () => {
 
   const plan = planOf(
     planCapture({
+      page,
       start: { _tag: "pick", element: article },
       destination: "clipboard",
       url: new URL("https://en.wikipedia.org/wiki/Screenshot"),
@@ -121,7 +141,7 @@ test("a Target exactly 8,192 CSS px tall is planned", async () => {
     })
   )
 
-  expect(plan.target).toBe(article)
+  expectSameElement(plan.target, article)
   expect(plan.crop).toEqual({ x: 0, y: 40, width: 960, height: 8192 })
 })
 
@@ -131,6 +151,7 @@ test("a Pick Capture to a Download is named after the site and the local time it
 
   const plan = planOf(
     planCapture({
+      page,
       start: { _tag: "pick", element: figure },
       destination: "download",
       url: new URL("https://en.wikipedia.org/wiki/Screenshot"),
@@ -152,6 +173,7 @@ test("a Pick Capture to the Clipboard has no filename", async () => {
 
   const plan = planOf(
     planCapture({
+      page,
       start: { _tag: "pick", element: figure },
       destination: "clipboard",
       url: new URL("https://en.wikipedia.org/wiki/Screenshot"),
@@ -169,6 +191,7 @@ test("a Download's site leaves out a leading www.", async () => {
 
   const plan = planOf(
     planCapture({
+      page,
       start: { _tag: "pick", element: figure },
       destination: "download",
       url: new URL("https://www.wikipedia.org/"),
@@ -189,6 +212,7 @@ test("a Download from a page without a host name is named after the page", async
 
   const plan = planOf(
     planCapture({
+      page,
       start: { _tag: "pick", element: figure },
       destination: "download",
       url: new URL("file:///home/me/wikipedia-screenshot.html"),
@@ -201,4 +225,151 @@ test("a Download from a page without a host name is named after the page", async
     _tag: "download",
     filename: "xshot-page-20260101-000000.png",
   })
+})
+
+/** The `index`th element matching `selector`, counting from 0. */
+function nth(page: Document, selector: string, index: number): Element {
+  const element = page.querySelectorAll(selector).item(index)
+
+  if (element === null) throw new Error(`The saved page has no ${selector} number ${index}`)
+
+  return element
+}
+
+test("right-clicking a Post's text in a timeline starts a Post Capture of that Post", async () => {
+  const page = await loadSavedPage("x-timeline.html")
+  const text = nth(page, '[data-testid="tweetText"]', 0)
+
+  expect(startPostCapture(text)).toEqual({
+    _tag: "ok",
+    value: { _tag: "post", post: { handle: "JakeSucky", postId: "2107138752770433355" } },
+  })
+})
+
+test("right-clicking inside a quoted post starts a Post Capture of the Post that quotes it", async () => {
+  const page = await loadSavedPage("x-status-quote.html")
+  // The Focal post's second text is the quoted Mikkel_Bjorn post's.
+  const quotedText = nth(page, '[data-testid="tweetText"]', 1)
+
+  expect(startPostCapture(quotedText)).toEqual({
+    _tag: "ok",
+    value: { _tag: "post", post: { handle: "AllanFeldt_", postId: "2107159689482100881" } },
+  })
+})
+
+test("right-clicking a repost's 'reposted' line starts a Post Capture of the original Post", async () => {
+  const page = await loadSavedPage("x-timeline.html")
+  // "sunil pai reposted" a LukyVJ Post.
+  const reposted = nth(page, '[data-testid="socialContext"]', 0)
+
+  expect(startPostCapture(reposted)).toEqual({
+    _tag: "ok",
+    value: { _tag: "post", post: { handle: "LukyVJ", postId: "2107072041358631139" } },
+  })
+})
+
+test("right-clicking a Post above the Focal post in a thread starts a Post Capture of that Post", async () => {
+  const page = await loadSavedPage("x-status-deep-reply.html")
+  // The thread's second Post, a Reply to the root.
+  const replyText = nth(page, '[data-testid="tweetText"]', 1)
+
+  expect(startPostCapture(replyText)).toEqual({
+    _tag: "ok",
+    value: { _tag: "post", post: { handle: "BrandonLuuMD", postId: "2100910325746782296" } },
+  })
+})
+
+test("right-clicking outside a Post is refused as No Post here", async () => {
+  const page = await loadSavedPage("x-status-original.html")
+  const relevantPeople = select(page, 'aside[aria-label="Relevant people"]')
+  const replyComposer = select(page, '[data-testid="inline_reply_offscreen"]')
+
+  expect(startPostCapture(relevantPeople)).toEqual({ _tag: "err", error: { _tag: "no-post" } })
+  expect(startPostCapture(replyComposer)).toEqual({ _tag: "err", error: { _tag: "no-post" } })
+})
+
+test("a Post Capture of a Reply captures the Focal post of its status page", async () => {
+  const page = await loadSavedPage("x-status-deep-reply.html")
+  // Four Posts of the thread are above the Focal post, the fifth article.
+  const focalPost = nth(page, "article", 4)
+
+  const layout = layoutOf([[focalPost, { x: 600, y: -120.5, width: 598, height: 412.25 }]], {
+    x: 0,
+    y: 1500,
+  })
+
+  const plan = planOf(
+    planCapture({
+      page,
+      start: { _tag: "post", post: { handle: "BrandonLuuMD", postId: "2100910333376278960" } },
+      destination: "clipboard",
+      url: new URL("https://x.com/BrandonLuuMD/status/2100910333376278960"),
+      now: new Date(2026, 9, 5, 12, 38, 42),
+      layout,
+    })
+  )
+
+  expectSameElement(plan.target, focalPost)
+  expect(plan.crop).toEqual({ x: 600, y: 1379.5, width: 598, height: 412.25 })
+})
+
+test("a Post Capture finds the Focal post below an unavailable Post's placeholder", async () => {
+  const page = await loadSavedPage("x-status-unavailable.html")
+  // The placeholder, two Posts, then the Focal post as the fourth article.
+  const focalPost = nth(page, "article", 3)
+
+  const plan = planOf(
+    planCapture({
+      page,
+      start: { _tag: "post", post: { handle: "koftaThunder", postId: "2107158042852684071" } },
+      destination: "clipboard",
+      url: new URL("https://x.com/koftaThunder/status/2107158042852684071"),
+      now: new Date(2026, 9, 5, 12, 38, 42),
+      layout: layoutOf([], { x: 0, y: 0 }),
+    })
+  )
+
+  expectSameElement(plan.target, focalPost)
+})
+
+test("a Post Capture is refused when the status page's Focal post is another Post", async () => {
+  const page = await loadSavedPage("x-status-quote.html")
+
+  // The quoted Mikkel_Bjorn post: the page shows it inside the Focal post, not as the Focal post.
+  const refusal = refusalOf(
+    planCapture({
+      page,
+      start: { _tag: "post", post: { handle: "Mikkel_Bjorn", postId: "2106788303831744795" } },
+      destination: "clipboard",
+      url: new URL("https://x.com/AllanFeldt_/status/2107159689482100881"),
+      now: new Date(2026, 9, 5, 12, 38, 42),
+      layout: layoutOf([], { x: 0, y: 0 }),
+    })
+  )
+
+  expect(refusal).toEqual({ _tag: "post-not-shown" })
+})
+
+test("a Post Capture is refused on a page without a Focal post", async () => {
+  const page = await loadSavedPage("x-timeline.html")
+
+  const refusal = refusalOf(
+    planCapture({
+      page,
+      start: { _tag: "post", post: { handle: "JakeSucky", postId: "2107138752770433355" } },
+      destination: "clipboard",
+      url: new URL("https://x.com/home"),
+      now: new Date(2026, 9, 5, 12, 38, 42),
+      layout: layoutOf([], { x: 0, y: 0 }),
+    })
+  )
+
+  expect(refusal).toEqual({ _tag: "post-not-shown" })
+})
+
+test("right-clicking an unavailable Post's placeholder is refused as No Post here", async () => {
+  const page = await loadSavedPage("x-status-unavailable.html")
+  const placeholder = nth(page, "article", 0)
+
+  expect(startPostCapture(placeholder)).toEqual({ _tag: "err", error: { _tag: "no-post" } })
 })
