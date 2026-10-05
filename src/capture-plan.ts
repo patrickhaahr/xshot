@@ -1,5 +1,7 @@
 import { err, ok } from "./prelude"
 import type { Result } from "./prelude"
+import { focalPost, postContaining, postRefOf } from "./x-markup"
+import type { PostRef } from "./x-markup"
 
 /** A rectangle in CSS pixels. */
 export type Rect = {
@@ -9,12 +11,20 @@ export type Rect = {
   readonly height: number
 }
 
-/** How a Capture was started, and from which element. */
-export type CaptureStart = {
-  /** A Pick Capture: the element the user clicked in Pick mode. */
-  readonly _tag: "pick"
-  readonly element: Element
-}
+/** How a Capture was started, and from what. */
+export type CaptureStart =
+  | {
+      /** A Pick Capture: the element the user clicked in Pick mode. */
+      readonly _tag: "pick"
+      readonly element: Element
+    }
+  | PostCaptureStart
+
+/**
+ * A Post Capture: the Post the user right-clicked. It is plain data, because the Capture is
+ * planned on that Post's own status page, not on the page that was right-clicked.
+ */
+export type PostCaptureStart = { readonly _tag: "post"; readonly post: PostRef }
 
 /** Where the user asked for the Capture to go. */
 export type Destination = "clipboard" | "download"
@@ -56,7 +66,11 @@ export type CapturePlan = {
 /** Why no Capture is taken. */
 export type CaptureRefusal =
   /** The Target is too tall to fit in one image at full sharpness. */
-  { readonly _tag: "oversized" }
+  | { readonly _tag: "oversized" }
+  /** A Post Capture was started somewhere that isn't a Post. */
+  | { readonly _tag: "no-post" }
+  /** The clicked Post's status page doesn't show it as its Focal post, so it can't be captured. */
+  | { readonly _tag: "post-not-shown" }
 
 /** Every Capture has two image pixels per CSS pixel, whatever the screen's pixel ratio. */
 export const CAPTURE_SCALE = 2
@@ -68,6 +82,23 @@ export const CAPTURE_SCALE = 2
 const MAX_IMAGE_HEIGHT = 16_384
 
 /**
+ * Start a Post Capture from the element under a right-click. Inside a quoted post, the Post
+ * that quotes it is captured.
+ *
+ * @param clicked - The element the user right-clicked.
+ * @returns The start of a Post Capture of the clicked Post, or "no-post" when the element
+ *   isn't part of a Post.
+ */
+export function startPostCapture(clicked: Element): Result<PostCaptureStart, CaptureRefusal> {
+  const post = postContaining(clicked)
+  const ref = post === null ? null : postRefOf(post)
+
+  if (ref === null) return err({ _tag: "no-post" })
+
+  return ok({ _tag: "post", post: ref })
+}
+
+/**
  * Decide what a Capture shows and which part of the page to crop, or why there is no Capture.
  *
  * @param input - How the Capture was started, where it goes, the page's address, the current
@@ -75,6 +106,8 @@ const MAX_IMAGE_HEIGHT = 16_384
  * @returns The plan for the Capture, or the reason it is refused.
  */
 export function planCapture(input: {
+  /** The page being captured. For a Post Capture, the clicked Post's own status page. */
+  readonly page: Document
   readonly start: CaptureStart
   readonly destination: Destination
 
@@ -85,8 +118,12 @@ export function planCapture(input: {
   readonly now: Date
   readonly layout: Layout
 }): Result<CapturePlan, CaptureRefusal> {
-  const { start, layout } = input
-  const target = start.element
+  const { layout } = input
+  const targeted = targetOf(input)
+
+  if (targeted._tag === "err") return targeted
+
+  const target = targeted.value
   const bounds = layout.boundsOf(target)
 
   if (bounds.height * CAPTURE_SCALE > MAX_IMAGE_HEIGHT) return err({ _tag: "oversized" })
@@ -101,6 +138,29 @@ export function planCapture(input: {
     },
     destination: planDestination(input),
   })
+}
+
+/** What the Capture shows: the picked element, or the Focal post of the clicked Post's status page. */
+function targetOf(input: {
+  readonly page: Document
+  readonly start: CaptureStart
+}): Result<Element, CaptureRefusal> {
+  const { page, start } = input
+
+  switch (start._tag) {
+    case "pick":
+      return ok(start.element)
+    case "post": {
+      const focal = focalPost(page)
+
+      // A Post's id is unique on X, while its handle can change or differ in case.
+      if (focal === null || postRefOf(focal)?.postId !== start.post.postId) {
+        return err({ _tag: "post-not-shown" })
+      }
+
+      return ok(focal)
+    }
+  }
 }
 
 function planDestination(input: {

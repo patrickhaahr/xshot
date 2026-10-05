@@ -92,8 +92,16 @@ export function showRefusal(refusal: CaptureRefusal): void {
       ])
 
       return
+    case "no-post":
+      show([text("No Post here")])
+
+      return
+    case "post-not-shown":
+      show([text("Couldn't find this Post on its status page.")])
+
+      return
     default:
-      casesHandled(refusal._tag)
+      casesHandled(refusal)
   }
 }
 

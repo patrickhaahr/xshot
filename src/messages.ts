@@ -2,14 +2,31 @@
 // send runtime messages (the manifest has no `externally_connectable`), and both sides type
 // their sends and listeners with these definitions, so a received message has this form.
 
-import type { CaptureRefusal, DestinationPlan, Rect } from "./capture-plan"
+import type {
+  CaptureRefusal,
+  Destination,
+  DestinationPlan,
+  PostCaptureStart,
+  Rect,
+} from "./capture-plan"
 
 /** A command the background worker sends to the page script. */
 export type PageCommand =
   /** The toolbar button was clicked. */
   | { readonly type: "enter-pick-mode" }
-  /** The debugger is attached: wait for the viewport to settle, then measure the Target. */
+  /** The debugger is attached: wait for the viewport to settle, then measure the picked Target. */
   | { readonly type: "measure" }
+  /** A Post Capture was chosen from the right-click menu: start it from the right-clicked element. */
+  | { readonly type: "start-post-capture"; readonly destination: Destination }
+  /**
+   * The debugger is attached to the clicked Post's status page, opened in a background tab:
+   * wait for the Post to render and the viewport to settle, then measure the Target.
+   */
+  | {
+      readonly type: "measure-post"
+      readonly start: PostCaptureStart
+      readonly destination: Destination
+    }
 
 /** The page's answer to a measure command, once the viewport has settled. */
 export type Measurement =
@@ -29,7 +46,15 @@ export type Measurement =
   | { readonly _tag: "refused"; readonly refusal: CaptureRefusal }
 
 /** A request the page script sends to the background worker. */
-export type WorkerRequest = { readonly type: "capture" }
+export type WorkerRequest =
+  /** Capture the Target picked on the sending page. */
+  | { readonly type: "capture" }
+  /** Capture a Post from its own status page, opened in a background tab. */
+  | {
+      readonly type: "capture-post"
+      readonly start: PostCaptureStart
+      readonly destination: Destination
+    }
 
 /**
  * The background worker's answer to a capture request. A Download is already saved when the

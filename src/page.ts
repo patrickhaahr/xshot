@@ -1,9 +1,11 @@
-import { planCapture } from "./capture-plan"
+import { planCapture, startPostCapture } from "./capture-plan"
+import type { CaptureStart, Destination } from "./capture-plan"
 import { dismissConfirmation, showConfirmation, showFailure, showRefusal } from "./confirmation"
 import type { CaptureResponse, Measurement, PageCommand, WorkerRequest } from "./messages"
 import { pick } from "./pick-mode"
 import type { Picked } from "./pick-mode"
 import { attempt } from "./prelude"
+import { focalPost } from "./x-markup"
 
 /** How long the viewport must go without resizing before the Target is measured. */
 const SETTLE_QUIET_MS = 300
@@ -11,18 +13,52 @@ const SETTLE_QUIET_MS = 300
 /** The longest wait for the viewport to settle before measuring anyway. */
 const SETTLE_LIMIT_MS = 2000
 
+/** The longest wait for a status page to render its Focal post before planning anyway. */
+const FOCAL_POST_LIMIT_MS = 15_000
+
+/** The longest wait for the Target's images to load before measuring anyway. */
+const IMAGES_LIMIT_MS = 5000
+
 /** Whether Pick mode or its Capture is under way; a second Pick mode would put its highlight in the Capture. */
 let busy = false
 
+/** The element under the latest right-click, where a Post Capture from the menu starts. */
+let rightClicked: Element | null = null
+
+window.addEventListener(
+  "contextmenu",
+  (event) => {
+    rightClicked = event.target instanceof Element ? event.target : null
+  },
+  { capture: true, passive: true }
+)
+
 chrome.runtime.onMessage.addListener(
-  (command: PageCommand, _sender: chrome.runtime.MessageSender, sendResponse: () => void) => {
-    if (command.type !== "enter-pick-mode") return false
+  (
+    command: PageCommand,
+    _sender: chrome.runtime.MessageSender,
+    sendResponse: (measurement?: Measurement) => void
+  ) => {
+    switch (command.type) {
+      case "enter-pick-mode":
+        // The acknowledgement tells the worker this script is already loaded.
+        sendResponse()
+        void pickAndCapture()
 
-    // The acknowledgement tells the worker this script is already loaded.
-    sendResponse()
-    void pickAndCapture()
+        return false
+      case "start-post-capture":
+        sendResponse()
+        void postCapture(command.destination)
 
-    return false
+        return false
+      case "measure-post":
+        void measurePostWhenRendered(command).then(sendResponse)
+
+        return true
+      case "measure":
+        // Answered by the Pick Capture that asked for it.
+        return false
+    }
   }
 )
 
@@ -44,18 +80,44 @@ async function pickThenCapture(): Promise<void> {
 
   if (picked._tag === "cancelled") return
 
-  switch (picked.destination) {
+  await deliver({ destination: picked.destination, response: capturePicked(picked) })
+}
+
+/**
+ * Start a Post Capture of the right-clicked Post. The worker captures it in a background tab,
+ * so this page only delivers the image and shows the Confirmation.
+ */
+async function postCapture(destination: Destination): Promise<void> {
+  dismissConfirmation()
+
+  const started = rightClicked === null ? null : startPostCapture(rightClicked)
+
+  if (started === null) return showRefusal({ _tag: "no-post" })
+
+  if (started._tag === "err") return showRefusal(started.error)
+
+  await deliver({
+    destination,
+    response: requestCapture({ type: "capture-post", start: started.value, destination }),
+  })
+}
+
+/** Deliver a Capture the worker is taking to its Destination, then show the Confirmation. */
+async function deliver(input: {
+  readonly destination: Destination
+  readonly response: Promise<CaptureResponse>
+}): Promise<void> {
+  switch (input.destination) {
     case "clipboard":
-      return copyToClipboard(picked)
+      return copyToClipboard(input.response)
     case "download":
-      return saveDownload(picked)
+      return confirmDownload(input.response)
   }
 }
 
-async function copyToClipboard(picked: Picked): Promise<void> {
+async function copyToClipboard(response: Promise<CaptureResponse>): Promise<void> {
   // The write starts right away, while the choosing click still counts as user activation and
   // the page has focus; the Clipboard takes the image once the worker has captured it.
-  const response = capture(picked)
   const png = response.then(pngOf)
 
   const written = await attempt(
@@ -81,9 +143,9 @@ async function copyToClipboard(picked: Picked): Promise<void> {
   await showConfirmation(await png, "Copied to Clipboard")
 }
 
-async function saveDownload(picked: Picked): Promise<void> {
+async function confirmDownload(response: Promise<CaptureResponse>): Promise<void> {
   // The worker saves the Download before it answers.
-  const captured = await capture(picked)
+  const captured = await response
 
   switch (captured._tag) {
     case "refused":
@@ -105,8 +167,8 @@ function pngOf(response: CaptureResponse): Blob {
   return pngFromBase64(response.pngBase64)
 }
 
-/** Ask the worker to capture the Target, measuring it when the worker is ready. */
-async function capture(picked: Picked): Promise<CaptureResponse> {
+/** Ask the worker to capture the picked Target, measuring it when the worker is ready. */
+async function capturePicked(picked: Picked): Promise<CaptureResponse> {
   function answerMeasure(
     command: PageCommand,
     _sender: chrome.runtime.MessageSender,
@@ -114,18 +176,25 @@ async function capture(picked: Picked): Promise<CaptureResponse> {
   ): boolean {
     if (command.type !== "measure") return false
 
-    void measureWhenSettled(picked).then(sendResponse)
+    void measureWhenSettled({
+      start: { _tag: "pick", element: picked.target },
+      destination: picked.destination,
+    }).then(sendResponse)
 
     return true
   }
 
   chrome.runtime.onMessage.addListener(answerMeasure)
-
-  const response = await attempt(
-    chrome.runtime.sendMessage<WorkerRequest, CaptureResponse>({ type: "capture" })
-  )
-
+  const response = await requestCapture({ type: "capture" })
   chrome.runtime.onMessage.removeListener(answerMeasure)
+
+  return response
+}
+
+async function requestCapture(request: WorkerRequest): Promise<CaptureResponse> {
+  const response = await attempt(
+    chrome.runtime.sendMessage<WorkerRequest, CaptureResponse>(request)
+  )
 
   if (response._tag === "err") {
     return { _tag: "failed", reason: `Couldn't reach XShot: ${response.error.message}` }
@@ -134,12 +203,30 @@ async function capture(picked: Picked): Promise<CaptureResponse> {
   return response.value
 }
 
-async function measureWhenSettled(picked: Picked): Promise<Measurement> {
+/**
+ * Measure a Post Capture on the Post's status page, once X has rendered the Focal post and its
+ * images. X renders the page after it loads, so the Focal post can appear seconds later.
+ */
+async function measurePostWhenRendered(
+  command: Extract<PageCommand, { readonly type: "measure-post" }>
+): Promise<Measurement> {
+  const focal = await rendered(() => focalPost(document), FOCAL_POST_LIMIT_MS)
+
+  if (focal !== null) await imagesLoaded(focal)
+
+  return measureWhenSettled({ start: command.start, destination: command.destination })
+}
+
+async function measureWhenSettled(input: {
+  readonly start: CaptureStart
+  readonly destination: Destination
+}): Promise<Measurement> {
   await viewportSettled()
 
   const planned = planCapture({
-    start: { _tag: "pick", element: picked.target },
-    destination: picked.destination,
+    page: document,
+    start: input.start,
+    destination: input.destination,
     url: new URL(window.location.href),
     now: new Date(),
     layout: {
@@ -153,6 +240,54 @@ async function measureWhenSettled(picked: Picked): Promise<Measurement> {
   const { crop, destination } = planned.value
 
   return { _tag: "measured", crop, devicePixelRatio: window.devicePixelRatio, destination }
+}
+
+/**
+ * Resolve with the element `find` returns once the page has rendered it, or with null after a
+ * limit. Watches the DOM rather than polling on a timer, because timers in a background tab
+ * are throttled.
+ */
+function rendered(find: () => Element | null, limitMs: number): Promise<Element | null> {
+  return new Promise((resolve) => {
+    const observer = new MutationObserver(check)
+
+    const limit = setTimeout(() => {
+      settle(null)
+    }, limitMs)
+
+    function check(): void {
+      const found = find()
+
+      if (found !== null) settle(found)
+    }
+
+    function settle(found: Element | null): void {
+      clearTimeout(limit)
+      observer.disconnect()
+      resolve(found)
+    }
+
+    observer.observe(document, { childList: true, subtree: true })
+    check()
+  })
+}
+
+/** Resolve once every image in an element has loaded or failed, or after a limit. */
+async function imagesLoaded(element: Element): Promise<void> {
+  const pending = [...element.querySelectorAll("img")].filter((image) => !image.complete)
+
+  const loads = pending.map(
+    (image) =>
+      new Promise<void>((resolve) => {
+        image.addEventListener("load", () => resolve(), { once: true })
+        image.addEventListener("error", () => resolve(), { once: true })
+      })
+  )
+
+  await Promise.race([
+    Promise.all(loads),
+    new Promise<void>((resolve) => setTimeout(resolve, IMAGES_LIMIT_MS)),
+  ])
 }
 
 /** Resolve once the viewport has gone a moment without resizing, or after a limit. */
