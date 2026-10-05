@@ -7,7 +7,7 @@ import type { CapturePlan, CaptureRefusal, Layout, Rect } from "./capture-plan"
 
 // Never pass an Element to expect(), not even to toBe: when the assertion fails, bun formats
 // the happy-dom node with the whole DOM graph behind it, which exhausts memory. Compare
-// Elements with expectSameElement and plain data with toEqual.
+// Elements with expectSameElement(s) and plain data with toEqual.
 
 beforeAll(() => {
   GlobalRegistrator.register({
@@ -57,6 +57,22 @@ function expectSameElement(actual: Element | undefined, expected: Element): void
   throw new Error(`Expected ${describeElement(expected)}, got ${describeElement(actual)}`)
 }
 
+/** Fail unless `actual` holds exactly the `expected` elements, in order. */
+function expectSameElements(
+  actual: ReadonlyArray<Element>,
+  expected: ReadonlyArray<Element>
+): void {
+  if (actual.length !== expected.length) {
+    throw new Error(
+      `Expected [${expected.map(describeElement).join(", ")}], got [${actual.map(describeElement).join(", ")}]`
+    )
+  }
+
+  expected.forEach((element, i) => {
+    expectSameElement(actual[i], element)
+  })
+}
+
 function describeElement(element: Element | undefined): string {
   if (element === undefined) return "no element"
 
@@ -100,7 +116,7 @@ test("a Pick Capture crops the whole picked element in document coordinates, bey
     })
   )
 
-  expectSameElement(plan.target, figure)
+  expectSameElements(plan.target, [figure])
   expect(plan.crop).toEqual({ x: 960.25, y: 899.5, width: 222, height: 1800.75 })
 })
 
@@ -141,7 +157,7 @@ test("a Target exactly 8,192 CSS px tall is planned", async () => {
     })
   )
 
-  expectSameElement(plan.target, article)
+  expectSameElements(plan.target, [article])
   expect(plan.crop).toEqual({ x: 0, y: 40, width: 960, height: 8192 })
 })
 
@@ -288,15 +304,32 @@ test("right-clicking outside a Post is refused as No Post here", async () => {
   expect(startPostCapture(replyComposer)).toEqual({ _tag: "err", error: { _tag: "no-post" } })
 })
 
-test("a Post Capture of a Reply captures the Focal post of its status page", async () => {
+test("a Post Capture of a Reply captures its Conversation from the root Post down to it, and nothing below", async () => {
   const page = await loadSavedPage("x-status-deep-reply.html")
-  // Four Posts of the thread are above the Focal post, the fifth article.
+  // The thread's root and three Replies are above the Focal post, the fifth article; two more
+  // Replies follow it.
+  const root = nth(page, "article", 0)
+  const second = nth(page, "article", 1)
+  const third = nth(page, "article", 2)
+  const fourth = nth(page, "article", 3)
   const focalPost = nth(page, "article", 4)
+  const focalCell = nth(page, '[data-testid="cellInnerDiv"]', 4)
+  const replyBelow = nth(page, "article", 5)
 
-  const layout = layoutOf([[focalPost, { x: 600, y: -120.5, width: 598, height: 412.25 }]], {
-    x: 0,
-    y: 1500,
-  })
+  // Scrolled 1,500 px down: the root starts 1,200 px above the viewport. The Focal post's cell
+  // also holds the reply composer below the Focal post.
+  const layout = layoutOf(
+    [
+      [root, { x: 600, y: -1200, width: 598, height: 432.25 }],
+      [second, { x: 600, y: -767.75, width: 598, height: 197.25 }],
+      [third, { x: 600, y: -570.5, width: 598, height: 521.5 }],
+      [fourth, { x: 600, y: -49, width: 598, height: 561.75 }],
+      [focalPost, { x: 600, y: 512.75, width: 598, height: 412.25 }],
+      [focalCell, { x: 600, y: 512.75, width: 598, height: 734.5 }],
+      [replyBelow, { x: 600, y: 1247.25, width: 598, height: 237.5 }],
+    ],
+    { x: 0, y: 1500 }
+  )
 
   const plan = planOf(
     planCapture({
@@ -309,13 +342,49 @@ test("a Post Capture of a Reply captures the Focal post of its status page", asy
     })
   )
 
-  expectSameElement(plan.target, focalPost)
-  expect(plan.crop).toEqual({ x: 600, y: 1379.5, width: 598, height: 412.25 })
+  expectSameElements(plan.target, [root, second, third, fourth, focalPost])
+  // From the root's top to the Focal post's bottom, above the reply composer.
+  expect(plan.crop).toEqual({ x: 600, y: 300, width: 598, height: 2125 })
+  expect(plan.warnings).toEqual([])
 })
 
-test("a Post Capture finds the Focal post below an unavailable Post's placeholder", async () => {
+test("a Post Capture of an original Post captures only that Post, without the reply composer", async () => {
+  const page = await loadSavedPage("x-status-original.html")
+  // The Focal post is the first article; its cell also holds the reply composer, and Replies follow.
+  const focalPost = nth(page, "article", 0)
+  const focalCell = nth(page, '[data-testid="cellInnerDiv"]', 0)
+  const firstReply = nth(page, "article", 1)
+
+  const layout = layoutOf(
+    [
+      [focalPost, { x: 600, y: 53, width: 598, height: 250.5 }],
+      [focalCell, { x: 600, y: 53, width: 598, height: 327.25 }],
+      [firstReply, { x: 600, y: 380.25, width: 598, height: 118.75 }],
+    ],
+    { x: 0, y: 0 }
+  )
+
+  const plan = planOf(
+    planCapture({
+      page,
+      start: { _tag: "post", post: { handle: "yacineMTB", postId: "2107133825360761293" } },
+      destination: "clipboard",
+      url: new URL("https://x.com/yacineMTB/status/2107133825360761293"),
+      now: new Date(2026, 9, 5, 12, 38, 42),
+      layout,
+    })
+  )
+
+  expectSameElements(plan.target, [focalPost])
+  expect(plan.crop).toEqual({ x: 600, y: 53, width: 598, height: 250.5 })
+})
+
+test("a Post Capture of a Reply below an unavailable Post keeps X's placeholder as a Partial Capture", async () => {
   const page = await loadSavedPage("x-status-unavailable.html")
-  // The placeholder, two Posts, then the Focal post as the fourth article.
+  // The root is X's "This Post is unavailable." placeholder, then two Posts, then the Focal post.
+  const placeholder = nth(page, "article", 0)
+  const second = nth(page, "article", 1)
+  const third = nth(page, "article", 2)
   const focalPost = nth(page, "article", 3)
 
   const plan = planOf(
@@ -329,7 +398,74 @@ test("a Post Capture finds the Focal post below an unavailable Post's placeholde
     })
   )
 
-  expectSameElement(plan.target, focalPost)
+  expectSameElements(plan.target, [placeholder, second, third, focalPost])
+  expect(plan.warnings).toEqual([{ _tag: "unavailable-posts", count: 1 }])
+})
+
+test("a Conversation over 8,192 CSS px tall is refused as Oversized, though each Post fits", async () => {
+  const page = await loadSavedPage("x-status-deep-reply.html")
+  const root = nth(page, "article", 0)
+  const focalPost = nth(page, "article", 4)
+
+  const layout = layoutOf(
+    [
+      [root, { x: 600, y: 0, width: 598, height: 4000 }],
+      [focalPost, { x: 600, y: 4000, width: 598, height: 4192.5 }],
+    ],
+    { x: 0, y: 0 }
+  )
+
+  const refusal = refusalOf(
+    planCapture({
+      page,
+      start: { _tag: "post", post: { handle: "BrandonLuuMD", postId: "2100910333376278960" } },
+      destination: "clipboard",
+      url: new URL("https://x.com/BrandonLuuMD/status/2100910333376278960"),
+      now: new Date(2026, 9, 5, 12, 38, 42),
+      layout,
+    })
+  )
+
+  expect(refusal).toEqual({ _tag: "oversized" })
+})
+
+test("a Pick Capture of an unavailable Post's placeholder is not a Partial Capture", async () => {
+  const page = await loadSavedPage("x-status-unavailable.html")
+  const placeholder = nth(page, "article", 0)
+
+  const plan = planOf(
+    planCapture({
+      page,
+      start: { _tag: "pick", element: placeholder },
+      destination: "clipboard",
+      url: new URL("https://x.com/koftaThunder/status/2107158042852684071"),
+      now: new Date(2026, 9, 5, 12, 38, 42),
+      layout: layoutOf([], { x: 0, y: 0 }),
+    })
+  )
+
+  expect(plan.warnings).toEqual([])
+})
+
+test("a Partial Capture counts every deleted Post's placeholder in the Conversation", async () => {
+  const page = await loadSavedPage("x-status-deleted.html")
+  // Eight items above the Focal post, the ninth article; the second and sixth are "This Post
+  // was deleted by the Post author." placeholders.
+  const conversation = [0, 1, 2, 3, 4, 5, 6, 7, 8].map((index) => nth(page, "article", index))
+
+  const plan = planOf(
+    planCapture({
+      page,
+      start: { _tag: "post", post: { handle: "gladeslamek", postId: "2107130327399387612" } },
+      destination: "clipboard",
+      url: new URL("https://x.com/gladeslamek/status/2107130327399387612"),
+      now: new Date(2026, 9, 5, 12, 38, 42),
+      layout: layoutOf([], { x: 0, y: 0 }),
+    })
+  )
+
+  expectSameElements(plan.target, conversation)
+  expect(plan.warnings).toEqual([{ _tag: "unavailable-posts", count: 2 }])
 })
 
 test("a Post Capture is refused when the status page's Focal post is another Post", async () => {
