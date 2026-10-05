@@ -5,7 +5,7 @@ import type { CaptureResponse, Measurement, PageCommand, WorkerRequest } from ".
 import { pick } from "./pick-mode"
 import type { Picked } from "./pick-mode"
 import { attempt } from "./prelude"
-import { conversationOf, focalPost } from "./x-markup"
+import { continuesFromAbove, conversationOf, focalPost } from "./x-markup"
 
 /** How long the viewport must go without resizing before the Target is measured. */
 const SETTLE_QUIET_MS = 300
@@ -15,6 +15,9 @@ const SETTLE_LIMIT_MS = 2000
 
 /** The longest wait for a status page to render its Focal post before planning anyway. */
 const FOCAL_POST_LIMIT_MS = 15_000
+
+/** The longest wait for X to render the root Post at the top of a status page. */
+const ROOT_POST_LIMIT_MS = 3000
 
 /** The longest wait for the Target's images to load before measuring anyway. */
 const IMAGES_LIMIT_MS = 5000
@@ -230,10 +233,16 @@ async function measurePostWhenRendered(
   command: Extract<PageCommand, { readonly type: "measure-post" }>
 ): Promise<Measurement> {
   const input = { start: command.start, destination: command.destination }
-  const focal = await rendered(() => focalPost(document), FOCAL_POST_LIMIT_MS)
+  await observedUntil(() => focalPost(document) !== null, FOCAL_POST_LIMIT_MS)
 
-  if (focal !== null) {
-    await Promise.all(conversationOf(focal).map(imagesLoaded))
+  if (focalPost(document) !== null) {
+    await scrollToRootPost()
+
+    // Found again, because X renders other cells, and can render the Focal post anew, as the
+    // page scrolls.
+    const focal = focalPost(document)
+
+    await Promise.all((focal === null ? [] : conversationOf(focal)).map(imagesLoaded))
     await expandTruncatedText(input)
   }
 
@@ -242,6 +251,30 @@ async function measurePostWhenRendered(
   const { measurement } = await measureWhenSettled(input)
 
   return measurement
+}
+
+/**
+ * Scroll to the top of the status page, where X renders the Conversation's earliest Posts, and
+ * wait until its topmost Post is the root, or give up after a limit. X's list keeps only the
+ * Posts near the viewport, so in a long Conversation the Posts above the Focal post can be
+ * missing until the page scrolls up to them.
+ */
+async function scrollToRootPost(): Promise<void> {
+  const { scrollX, scrollY } = window
+  window.scrollTo(0, 0)
+
+  await observedUntil(() => {
+    const focal = focalPost(document)
+
+    return focal === null || !continuesFromAbove(conversationOf(focal)[0])
+  }, ROOT_POST_LIMIT_MS)
+
+  if (focalPost(document) !== null) return
+
+  // The Conversation is taller than X keeps rendered, so the Focal post went away. Go back to
+  // it: the Capture is then a Partial Capture that doesn't start at the root Post.
+  window.scrollTo(scrollX, scrollY)
+  await observedUntil(() => focalPost(document) !== null, FOCAL_POST_LIMIT_MS)
 }
 
 /**
@@ -359,16 +392,6 @@ function planHere(
     now: new Date(),
     layout,
   })
-}
-
-/**
- * Resolve with the element `find` returns once the page has rendered it, or with null after a
- * limit.
- */
-async function rendered(find: () => Element | null, limitMs: number): Promise<Element | null> {
-  await observedUntil(() => find() !== null, limitMs)
-
-  return find()
 }
 
 /**

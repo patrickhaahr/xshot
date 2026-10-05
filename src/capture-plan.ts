@@ -3,6 +3,7 @@ import type { Result } from "./prelude"
 import {
   clutterIn,
   containsPost,
+  continuesFromAbove,
   conversationOf,
   cutOffQuotedPostsIn,
   focalPost,
@@ -104,6 +105,11 @@ export type CaptureWarning =
   | { readonly _tag: "not-expanded" }
   /** A quoted post whose text X shows only the start of, with no way to expand it. */
   | { readonly _tag: "quoted-post-cut-off" }
+  /**
+   * The Conversation starts below its root Post: X didn't render the Posts above its topmost
+   * one, although that Post replies to one.
+   */
+  | { readonly _tag: "root-post-missing" }
 
 /** Why no Capture is taken. */
 export type CaptureRefusal =
@@ -224,6 +230,9 @@ function warningsOf(input: {
   if (input.start._tag === "pick") return []
 
   const warnings: CaptureWarning[] = []
+
+  if (continuesFromAbove(input.target[0])) warnings.push({ _tag: "root-post-missing" })
+
   const unavailable = input.target.filter(isPlaceholder).length
 
   if (unavailable > 0) warnings.push({ _tag: "unavailable-posts", count: unavailable })

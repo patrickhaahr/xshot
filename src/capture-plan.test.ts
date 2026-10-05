@@ -777,3 +777,24 @@ test("a Pick Capture of a timeline removes every Post's Clutter but keeps the ho
   expect(shownCount(plan, '[data-testid="caret"], button[aria-label="Grok actions"]')).toBe(0)
   expect(shownCount(plan, '[data-testid="tweetTextarea_0"]')).toBe(1)
 })
+
+test("a Post Capture whose Conversation starts below the root Post is a Partial Capture", async () => {
+  const page = await loadSavedPage("x-status-deep-reply.html")
+  // X's list keeps only the cells near the viewport. Without the root's cell, the topmost Post
+  // still has the line that joins it to the Post it replies to.
+  nth(page, '[data-testid="cellInnerDiv"]', 0).remove()
+
+  const plan = planOf(
+    planCapture({
+      page,
+      start: { _tag: "post", post: { handle: "BrandonLuuMD", postId: "2100910333376278960" } },
+      destination: "clipboard",
+      url: new URL("https://x.com/BrandonLuuMD/status/2100910333376278960"),
+      now: new Date(2026, 9, 5, 12, 38, 42),
+      layout: layoutOf([], { x: 0, y: 0 }),
+    })
+  )
+
+  expect(plan.target.length).toBe(4)
+  expect(plan.warnings).toEqual([{ _tag: "root-post-missing" }])
+})

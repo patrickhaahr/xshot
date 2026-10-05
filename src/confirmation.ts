@@ -96,6 +96,8 @@ function warningMessage(partial: CaptureWarning): string {
       return 'Partial Capture: some "Show more" text couldn\'t be expanded.'
     case "quoted-post-cut-off":
       return "Partial Capture: X shows only the start of a quoted post."
+    case "root-post-missing":
+      return "Partial Capture: the Conversation doesn't start at the root Post."
     default:
       return casesHandled(partial)
   }
