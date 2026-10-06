@@ -3,7 +3,21 @@
   "name": "XShot",
   "version": "0.0.0",
   "description": "Capture X posts and page elements as one full-height image.",
-  "permissions": ["activeTab", "scripting", "debugger", "clipboardWrite"],
+  "permissions": [
+    "activeTab",
+    "scripting",
+    "debugger",
+    "clipboardWrite",
+    "downloads",
+    "contextMenus"
+  ],
   "action": { "default_title": "XShot" },
-  "background": { "service_worker": "background.js", "type": "module" }
+  "background": { "service_worker": "background.js", "type": "module" },
+  "content_scripts": [
+    {
+      "matches": ["https://x.com/*", "https://twitter.com/*"],
+      "js": ["page.js"],
+      "run_at": "document_start"
+    }
+  ]
 }
