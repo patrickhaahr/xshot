@@ -251,12 +251,27 @@ async function screenshot(input: {
 
   const { crop, devicePixelRatio, destination, warnings } = measured.value
 
+  const zoomed = await pageZoom(debuggee)
+
+  if (zoomed._tag === "err") return failed("read the page's zoom", zoomed.error)
+
+  const zoom = zoomed.value
+
   const shot = await withinCaptureLimit(
     chrome.debugger.sendCommand(debuggee, "Page.captureScreenshot", {
       format: "png",
       captureBeyondViewport: true,
-      // Chromium multiplies the clip by the screen's pixel ratio as well as by `scale`.
-      clip: { ...crop, scale: CAPTURE_SCALE / devicePixelRatio },
+      // The clip is in zoomed pixels: CSS pixels times the browser zoom, which X pages often
+      // have. Chromium multiplies it by the screen's pixel ratio as well as by `scale`, and
+      // `devicePixelRatio` is the zoom times the screen's pixel ratio, so the image has
+      // CAPTURE_SCALE pixels per CSS pixel.
+      clip: {
+        x: crop.x * zoom,
+        y: crop.y * zoom,
+        width: crop.width * zoom,
+        height: crop.height * zoom,
+        scale: CAPTURE_SCALE / devicePixelRatio,
+      },
     })
   )
 
@@ -330,6 +345,23 @@ function downloadFinished(downloadId: number): Promise<Result<void, Error>> {
       }
     })
   })
+}
+
+/** The browser zoom of the debugged page, such as 1.5 at 150%. */
+async function pageZoom(debuggee: chrome.debugger.Debuggee): Promise<Result<number, Error>> {
+  const metrics = await withinCaptureLimit(
+    chrome.debugger.sendCommand(debuggee, "Page.getLayoutMetrics")
+  )
+
+  if (metrics._tag === "err") return metrics
+
+  // SAFETY: The protocol defines Page.getLayoutMetrics's result to include
+  // `cssVisualViewport`, whose `zoom` is optional, and the command resolved without an error.
+  const { cssVisualViewport } = metrics.value as {
+    readonly cssVisualViewport: { readonly zoom?: number }
+  }
+
+  return ok(cssVisualViewport.zoom ?? 1)
 }
 
 /** Bound a protocol command; capture's finally detaches even if the command never answers. */

@@ -184,13 +184,21 @@ export function postRefOf(post: Element): PostRef | null {
 
 /**
  * Page interface inside a Post that isn't content: the "…" menu, the Grok actions button next
- * to it, and "Show translation" (formerly the "Translate post" link). `caret` also marks trend
- * menus in the sidebar, so it only counts inside a Post.
+ * to it, "Show translation" (formerly the "Translate post" link), the Follow, Following and
+ * Subscribe buttons next to the author, and the Focal post's "Relevant" reply sort menu and
+ * "View quotes" link. `caret` also marks trend menus in the sidebar, so it only counts inside a
+ * Post. The reply sort menu is the only menu button in a Post with neither a test id nor a
+ * label; "…", Repost and Share have one.
  */
 const POST_CLUTTER = [
   '[data-testid="caret"]',
   'button[aria-label="Grok actions"]',
   'button[aria-label="Show translation"]',
+  'button[data-testid$="-follow"]',
+  'button[data-testid$="-unfollow"]',
+  'button[data-testid$="-subscribe"]',
+  'button[aria-haspopup="menu"]:not([data-testid]):not([aria-label])',
+  'a[href$="/quotes"]',
 ].join(", ")
 
 /**
@@ -224,44 +232,49 @@ export function containsPost(target: Element): boolean {
 export function clutterIn(target: Element): ReadonlyArray<Element> {
   const posts = target.matches(POST) ? [target] : [...target.querySelectorAll(POST)]
 
-  const inPosts = posts.flatMap((post) =>
-    [...post.querySelectorAll(POST_CLUTTER)].map((control) => wholeControl(control, post))
-  )
-
-  const aroundPosts = [...target.querySelectorAll(PAGE_CLUTTER)].map((section) =>
-    wholeControl(section, target)
-  )
+  const inPosts = posts.flatMap((post) => wholeControls(post.querySelectorAll(POST_CLUTTER), post))
+  const aroundPosts = wholeControls(target.querySelectorAll(PAGE_CLUTTER), target)
 
   return [...inPosts, ...aroundPosts]
 }
 
 /**
- * A control together with the wrappers and icons that are there only for it, such as the
- * translation icon in front of "Show translation", so removing it leaves neither a stray icon
- * nor a wrapper's spacing behind.
+ * Controls together with the wrappers and icons that are there only for them, such as the
+ * translation icon in front of "Show translation", or the row holding both the "Relevant" menu
+ * and "View quotes", so removing them leaves neither a stray icon nor a wrapper's spacing
+ * behind.
  *
- * @param control - A piece of Clutter.
- * @param within - The element the control is in, which is never part of it.
- * @returns The outermost element inside `within` that holds the control and nothing else.
+ * @param controls - Pieces of Clutter.
+ * @param within - The element the controls are in, which is never part of them.
+ * @returns The outermost elements inside `within` that hold controls and nothing else, in
+ *   page order.
  */
-function wholeControl(control: Element, within: Element): Element {
-  let whole = control
+function wholeControls(controls: Iterable<Element>, within: Element): Element[] {
+  const wholes = new Set(controls)
 
-  while (
-    whole.parentElement !== null &&
-    whole.parentElement !== within &&
-    holdsOnly(whole.parentElement, whole)
-  ) {
-    whole = whole.parentElement
+  for (let grew = true; grew;) {
+    grew = false
+
+    for (const whole of wholes) {
+      const parent = whole.parentElement
+
+      if (parent === null || parent === within || !holdsOnly(parent, wholes)) continue
+
+      for (const child of parent.children) wholes.delete(child)
+      wholes.add(parent)
+      grew = true
+    }
   }
 
-  return whole
+  return [...wholes].sort((a, b) =>
+    a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING ? -1 : 1
+  )
 }
 
-/** Whether `parent` holds nothing but `child` and icons: no other element and no text. */
-function holdsOnly(parent: Element, child: Element): boolean {
+/** Whether `parent` holds nothing but some of `children` and icons: no other element and no text. */
+function holdsOnly(parent: Element, children: ReadonlySet<Element>): boolean {
   return [...parent.childNodes].every((node) => {
-    if (node === child) return true
+    if (node instanceof Element && children.has(node)) return true
 
     switch (node.nodeType) {
       case Node.ELEMENT_NODE:

@@ -674,7 +674,6 @@ test("a Post Capture removes the '…' menu and Grok actions buttons of every Po
 
   // The root, three Replies and the Focal post each have both buttons.
   expect(shownCount(plan, 'article[data-testid="tweet"]')).toBe(5)
-  expect(plan.clutter.length).toBe(10)
   expect(shownCount(plan, '[data-testid="caret"]')).toBe(0)
   expect(shownCount(plan, 'button[aria-label="Grok actions"]')).toBe(0)
 })
@@ -693,6 +692,32 @@ test("a Post Capture removes the 'Show translation' button together with its ico
   expect(icon === null ? "no icon" : isShown(plan, icon)).toBe(false)
   // The Post's text and the quoted post's text stay.
   expect(shownCount(plan, '[data-testid="tweetText"]')).toBe(2)
+})
+
+test("a Post Capture removes the Subscribe button next to the author", async () => {
+  const plan = await planPostCapture("x-status-original.html", {
+    handle: "yacineMTB",
+    postId: "2107133825360761293",
+  })
+
+  expect(shownCount(plan, 'button[data-testid$="-subscribe"]')).toBe(0)
+  expect(shownCount(plan, '[data-testid="User-Name"]')).toBe(1)
+})
+
+test("a Post Capture removes the 'Relevant' menu and 'View quotes' with the row holding them", async () => {
+  const plan = await planPostCapture("x-status-original.html", {
+    handle: "yacineMTB",
+    postId: "2107133825360761293",
+  })
+
+  const quotes = select(plan.target[0].ownerDocument, 'a[href$="/quotes"]')
+  // The row holds the menu's wrapper and the link's wrapper, and spaces them out.
+  const row = quotes.parentElement?.parentElement
+
+  expect(row === null || row === undefined ? "no row" : isShown(plan, row)).toBe(false)
+  // The reply sort menu goes; Share, the other menu without a test id, stays.
+  expect(shownCount(plan, 'button[aria-haspopup="menu"]:not([data-testid])')).toBe(1)
+  expect(shownCount(plan, 'button[aria-label="Share post"]')).toBe(1)
 })
 
 test("a Post Capture keeps the engagement counts, the timestamp and the community note", async () => {

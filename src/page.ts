@@ -1,5 +1,5 @@
 import { planCapture, startPostCapture } from "./capture-plan"
-import type { CaptureRequest, Destination, Layout } from "./capture-plan"
+import type { CaptureRequest, Destination, Layout, Rect, Target } from "./capture-plan"
 import { dismissConfirmation, showConfirmation, showFailure, showRefusal } from "./confirmation"
 import type { CaptureResponse, Measurement, PageCommand, WorkerRequest } from "./messages"
 import { pick } from "./pick-mode"
@@ -12,6 +12,12 @@ const SETTLE_QUIET_MS = 300
 
 /** The longest wait for the viewport to settle before measuring anyway. */
 const SETTLE_LIMIT_MS = 2000
+
+/** How long the Target must stay in place before it is measured. */
+const STILL_MS = 300
+
+/** The longest wait for the Target to stay in place before measuring anyway. */
+const STILL_LIMIT_MS = 3000
 
 /** The longest wait for a status page to render its Focal post before planning anyway. */
 const FOCAL_POST_LIMIT_MS = 15_000
@@ -183,7 +189,7 @@ function pngOf(response: CaptureResponse): Blob {
 
 /**
  * Ask the worker to capture the picked Target, measuring it when the worker is ready. The
- * page gets its Clutter back once the worker has captured it.
+ * page is put back as it was once the worker has captured it.
  */
 async function capturePicked(picked: Picked): Promise<CaptureResponse> {
   let restore = (): void => {}
@@ -255,7 +261,7 @@ async function measurePostWhenRendered(
   }
 
   // Planned again: Truncated text that didn't expand is still listed and makes a Partial Capture.
-  // The Clutter stays out of the layout: the worker closes this background tab after capturing.
+  // The page isn't put back: the worker closes this background tab after capturing.
   const { measurement } = await measureWhenSettled(input)
 
   return measurement
@@ -304,7 +310,7 @@ async function expandTruncatedText(input: CaptureRequest): Promise<void> {
   await observedUntil(() => controls.every((control) => !control.isConnected), EXPAND_LIMIT_MS)
 }
 
-/** A measurement, and how to put back the Clutter taken out of the layout for it. */
+/** A measurement, and how to put back what was changed on the page for it. */
 type Measured = { readonly measurement: Measurement; readonly restore: () => void }
 
 /** A layout in which nothing is measured yet, for planning only what a Capture shows. */
@@ -315,30 +321,41 @@ const UNMEASURED: Layout = {
 }
 
 /**
- * Plan the Capture once the viewport has settled, with its Clutter out of the layout. The
- * Clutter stays out until `restore` is called, so the screenshot doesn't show it either.
+ * Plan the Capture once the viewport has settled, without the scrollbar, with its Clutter out
+ * of the layout and with nothing floating over it. All of that lasts until `restore` is
+ * called, so the screenshot shows the page as it was measured.
  */
 async function measureWhenSettled(input: CaptureRequest): Promise<Measured> {
+  // The screenshot makes the viewport as tall as the page, which drops the scrollbar and
+  // widens the layout, so a centred page such as X's moves sideways off the crop. Without the
+  // scrollbar the page is measured as the screenshot shows it. Hiding it resizes the viewport,
+  // which the wait for the viewport to settle covers.
+  const restoreScrollbar = overrideStyle([document.documentElement], "scrollbar-width", "none")
   await viewportSettled()
 
   // The Clutter changes the Target's size, so it is planned once unmeasured to learn the
   // Clutter, and measured only once the Clutter is out of the layout.
   const unmeasured = planOnPage(input, UNMEASURED)
-  const restore = removeFromLayout(unmeasured._tag === "ok" ? unmeasured.value.clutter : [])
 
-  const planned = planOnPage(input, {
-    boundsOf: (element) => element.getBoundingClientRect(),
-    scroll: { x: window.scrollX, y: window.scrollY },
-    imageLoaded,
-  })
+  const restoreClutter = overrideStyle(
+    unmeasured._tag === "ok" ? unmeasured.value.clutter : [],
+    "display",
+    "none"
+  )
+
+  const planned = await plannedWhenStill(input)
 
   if (planned._tag === "err") {
-    restore()
+    restoreClutter()
+    restoreScrollbar()
 
     return { measurement: { _tag: "refused", refusal: planned.error }, restore: () => {} }
   }
 
-  const { crop, destination, warnings } = planned.value
+  const { crop, destination, target, warnings } = planned.value
+
+  // Hidden rather than taken out of the layout, so nothing moves after measuring.
+  const restoreFloating = overrideStyle(floatingOver(crop, target), "visibility", "hidden")
 
   return {
     measurement: {
@@ -348,36 +365,120 @@ async function measureWhenSettled(input: CaptureRequest): Promise<Measured> {
       destination,
       warnings,
     },
-    restore,
+    restore: () => {
+      restoreFloating()
+      restoreClutter()
+      restoreScrollbar()
+    },
   }
 }
 
 /**
- * Take elements out of the layout, so they leave no gap, without detaching them from the page,
- * which X's own scripts still manage.
- *
- * @returns How to put them back as they were.
+ * Plan the Capture as the page is laid out now, once the Target has stayed in place for a
+ * moment, or after a limit. X lays out its lists after the fact: when text above the Focal
+ * post expands, or the Clutter leaves the layout, it moves the Posts and the scroll position
+ * to keep the Focal post in view, and until then a Conversation can even start above the top
+ * of the page.
  */
-function removeFromLayout(elements: ReadonlyArray<Element>): () => void {
-  // Read before any is removed, so an element listed twice still gets its own value back.
-  const removed = elements.flatMap((element) =>
+async function plannedWhenStill(input: CaptureRequest): Promise<ReturnType<typeof planOnPage>> {
+  const deadline = performance.now() + STILL_LIMIT_MS
+  let planned = planMeasured(input)
+
+  while (performance.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, STILL_MS))
+    const again = planMeasured(input)
+
+    if (sameCrop(planned, again)) return again
+
+    planned = again
+  }
+
+  return planned
+}
+
+function planMeasured(input: CaptureRequest): ReturnType<typeof planOnPage> {
+  return planOnPage(input, {
+    boundsOf: (element) => element.getBoundingClientRect(),
+    scroll: { x: window.scrollX, y: window.scrollY },
+    imageLoaded,
+  })
+}
+
+/** Whether two plans crop the same part of the page, or are refused for the same reason. */
+function sameCrop(a: ReturnType<typeof planOnPage>, b: ReturnType<typeof planOnPage>): boolean {
+  if (a._tag === "err" || b._tag === "err") {
+    return a._tag === "err" && b._tag === "err" && a.error._tag === b.error._tag
+  }
+
+  const [one, other] = [a.value.crop, b.value.crop]
+
+  return (
+    one.x === other.x &&
+    one.y === other.y &&
+    one.width === other.width &&
+    one.height === other.height
+  )
+}
+
+/**
+ * The page's fixed and sticky elements over the crop, such as X's header over a Post scrolled
+ * up under it. The screenshot draws them where they are on screen, on top of whatever the crop
+ * shows there. Elements holding the Target, such as a dialog it is in, and elements inside it
+ * are part of what is captured.
+ */
+function floatingOver(crop: Rect, target: Target): Element[] {
+  return [...document.body.querySelectorAll("*")].filter((element) => {
+    const { position } = getComputedStyle(element)
+
+    if (position !== "fixed" && position !== "sticky") return false
+
+    if (target.some((item) => element.contains(item) || item.contains(element))) return false
+
+    const bounds = element.getBoundingClientRect()
+    const left = bounds.left + window.scrollX
+    const top = bounds.top + window.scrollY
+
+    return (
+      bounds.width > 0 &&
+      bounds.height > 0 &&
+      left < crop.x + crop.width &&
+      left + bounds.width > crop.x &&
+      top < crop.y + crop.height &&
+      top + bounds.height > crop.y
+    )
+  })
+}
+
+/**
+ * Override a style property of elements, without detaching them from the page, which X's own
+ * scripts still manage.
+ *
+ * @returns How to put the property back as it was.
+ */
+function overrideStyle(
+  elements: ReadonlyArray<Element>,
+  property: string,
+  value: string
+): () => void {
+  // Read before any is changed, so an element listed twice still gets its own value back.
+  const changed = elements.flatMap((element) =>
     element instanceof HTMLElement
       ? [
           {
             element,
-            display: element.style.getPropertyValue("display"),
-            priority: element.style.getPropertyPriority("display"),
+            value: element.style.getPropertyValue(property),
+            priority: element.style.getPropertyPriority(property),
           },
         ]
       : []
   )
 
-  for (const { element } of removed) element.style.setProperty("display", "none", "important")
+  for (const { element } of changed) element.style.setProperty(property, value, "important")
 
   return () => {
-    for (const { element, display, priority } of removed) {
-      if (display === "") element.style.removeProperty("display")
-      else element.style.setProperty("display", display, priority)
+    for (const { element, value: was, priority } of changed) {
+      if (was === "") element.style.removeProperty(property)
+      else element.style.setProperty(property, was, priority)
     }
   }
 }
