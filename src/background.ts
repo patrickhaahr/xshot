@@ -89,7 +89,8 @@ async function onScreenshotPostMenu(input: {
 
 /**
  * Capture a Post from its own status page, opened in a background tab next to the page it was
- * right-clicked on and closed afterwards, so the user stays where they are.
+ * right-clicked on and closed afterwards, so the user stays where they are. The page asks for
+ * this only when it doesn't show the Post's whole Conversation itself.
  */
 async function captureFromStatusPage(
   request: Extract<WorkerRequest, { readonly type: "capture-post" }>,

@@ -2,8 +2,10 @@ import { afterAll, beforeAll, expect, test } from "bun:test"
 
 import { GlobalRegistrator } from "@happy-dom/global-registrator"
 
-import { planCapture, startPostCapture } from "./capture-plan"
+import { planCapture, postCaptureSite, startPostCapture } from "./capture-plan"
 import type { CapturePlan, CaptureRefusal, Layout, Rect } from "./capture-plan"
+import { postRefOf } from "./x-markup"
+import type { PostRef } from "./x-markup"
 
 // Never pass an Element to expect(), not even to toBe: when the assertion fails, bun formats
 // the happy-dom node with the whole DOM graph behind it, which exhausts memory. Compare
@@ -868,4 +870,158 @@ test("a Post Capture with an image in the Conversation that didn't load is a Par
   )
 
   expect(loadedPlan.warnings).toEqual([])
+})
+
+/** Where a Post Capture is measured and of which Post, as plain data. */
+function siteOf(clicked: Element) {
+  const site = postCaptureSite(clicked)
+
+  if (site._tag !== "ok") throw new Error(`Expected a Post Capture, got ${site.error._tag}`)
+
+  return { site: site.value._tag, start: site.value.start._tag, post: site.value.start.post }
+}
+
+/** The Post a Post Capture captured in place shows as a Conversation of one. */
+function conversationOfOne(clicked: Element): Element {
+  const site = postCaptureSite(clicked)
+
+  if (site._tag !== "ok" || site.value.start._tag !== "conversation-of-one") {
+    throw new Error("Expected a Post Capture of a Conversation of one")
+  }
+
+  return site.value.start.element
+}
+
+function postRefOrThrow(post: Element): PostRef {
+  const ref = postRefOf(post)
+
+  if (ref === null) throw new Error("The Post has no permalink")
+
+  return ref
+}
+
+test("a Post Capture of a timeline Post that is neither a Reply nor Truncated is captured in place", async () => {
+  const page = await loadSavedPage("x-timeline.html")
+  const text = nth(page, '[data-testid="tweetText"]', 0)
+
+  expect(siteOf(text)).toEqual({
+    site: "in-place",
+    start: "conversation-of-one",
+    post: { handle: "JakeSucky", postId: "2107138752770433355" },
+  })
+  expectSameElement(conversationOfOne(text), nth(page, "article", 0))
+})
+
+test("a Post Capture of a Truncated timeline Post uses its status page", async () => {
+  const page = await loadSavedPage("x-truncated.html")
+  const truncatedPost = select(page, 'article:has(a[href="/kyr0stack/status/2106836875688435747"])')
+
+  expect(siteOf(truncatedPost)).toEqual({
+    site: "status-page",
+    start: "post",
+    post: { handle: "kyr0stack", postId: "2106836875688435747" },
+  })
+})
+
+test("a Post Capture of a timeline Reply marked 'Replying to' uses its status page", async () => {
+  const page = await loadSavedPage("x-truncated.html")
+  const reply = select(page, 'article:has(a[href="/bentlegen/status/2107121313261433165"])')
+
+  expect(siteOf(reply)).toEqual({
+    site: "status-page",
+    start: "post",
+    post: { handle: "bentlegen", postId: "2107121313261433165" },
+  })
+})
+
+test("a Post Capture of a Reply joined by a line to the Post above, outside a status page, uses its status page", async () => {
+  const page = await loadSavedPage("x-status-deep-reply.html")
+  // Without the Focal post's mark, the thread reads as it would in a timeline.
+  nth(page, "article", 4).removeAttribute("tabindex")
+
+  expect(siteOf(nth(page, "article", 1))).toEqual({
+    site: "status-page",
+    start: "post",
+    post: { handle: "BrandonLuuMD", postId: "2100910325746782296" },
+  })
+  // The root replies to nothing, so it is a Conversation of one.
+  expect(siteOf(nth(page, "article", 0)).site).toBe("in-place")
+})
+
+test("an @mention in a timeline Post's text doesn't make it a Reply", async () => {
+  const page = await loadSavedPage("x-timeline.html")
+  const mention = page.createElement("a")
+  mention.setAttribute("href", "/jack")
+  mention.textContent = "@jack"
+  nth(page, '[data-testid="tweetText"]', 0).append(mention)
+
+  expect(siteOf(mention).site).toBe("in-place")
+})
+
+test("a Post Capture of the Focal post of the status page the user is on is captured in place", async () => {
+  const page = await loadSavedPage("x-status-deep-reply.html")
+
+  expect(siteOf(nth(page, "article", 4))).toEqual({
+    site: "in-place",
+    start: "post",
+    post: { handle: "BrandonLuuMD", postId: "2100910333376278960" },
+  })
+})
+
+test("a Post Capture of another Post on a status page uses that Post's own status page", async () => {
+  const page = await loadSavedPage("x-status-deep-reply.html")
+
+  // The root above the Focal post, and a Reply below it that X doesn't mark as one.
+  expect(siteOf(nth(page, "article", 0)).site).toBe("status-page")
+  expect(siteOf(nth(page, "article", 5)).site).toBe("status-page")
+})
+
+test("a Post Capture of a Conversation of one captures just that Post, without its Clutter", async () => {
+  const page = await loadSavedPage("x-timeline.html")
+  const post = nth(page, "article", 0)
+
+  const layout = layoutOf([[post, { x: 600, y: 120.5, width: 598, height: 300 }]], {
+    x: 0,
+    y: 800,
+  })
+
+  const plan = planOf(
+    planCapture({
+      page,
+      start: { _tag: "conversation-of-one", post: postRefOrThrow(post), element: post },
+      destination: "download",
+      url: new URL("https://x.com/home"),
+      now: new Date(2026, 9, 5, 12, 38, 42),
+      layout,
+    })
+  )
+
+  expectSameElements(plan.target, [post])
+  expect(plan.crop).toEqual({ x: 600, y: 920.5, width: 598, height: 300 })
+  expect(shownCount(plan, '[data-testid="caret"]')).toBe(0)
+  expect(plan.destination).toEqual({
+    _tag: "download",
+    filename: "xshot-JakeSucky-2107138752770433355.png",
+  })
+  expect(plan.warnings).toEqual([])
+})
+
+test("a Post Capture of a Conversation of one is refused once X has taken the Post off the page", async () => {
+  const page = await loadSavedPage("x-timeline.html")
+  const post = nth(page, "article", 0)
+  const start = { _tag: "conversation-of-one", post: postRefOrThrow(post), element: post } as const
+  post.remove()
+
+  const refusal = refusalOf(
+    planCapture({
+      page,
+      start,
+      destination: "clipboard",
+      url: new URL("https://x.com/home"),
+      now: new Date(2026, 9, 5, 12, 38, 42),
+      layout: layoutOf([], { x: 0, y: 0 }),
+    })
+  )
+
+  expect(refusal).toEqual({ _tag: "post-not-shown" })
 })
