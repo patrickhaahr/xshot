@@ -27,12 +27,17 @@ What a Capture shows. For a Post Capture it is the Conversation ending at the Po
 _Avoid_: Node, element, selection
 
 **Clutter**:
-Page interface inside a Post that isn't content, removed before any Capture whose Target contains a Post: the reply composer, "Relevant people" and "Discover more" sections, the "Show translation" button (formerly the "Translate post" link), the "…" menu button, and the Grok actions button.
+Page interface inside a Post that isn't content, removed before any Capture whose Target contains a Post: the reply composer, the "Relevant people" section, the "Show translation" button (formerly the "Translate post" link), the "…" menu button, and the Grok actions button.
+"Discover more" is not recognised yet; no saved page shows its markup.
+
 _Avoid_: Noise, junk, chrome
 
 **Truncated**:
 Describes a Post or quoted post whose text X has shortened behind "Show more". A Post Capture expands truncated text first; a Pick Capture shows it as rendered.
 _Avoid_: Collapsed, cut off
+
+**Post not shown**:
+A Post Capture refusal when the requested Post is missing from its status page, or X shows a different Focal post. XShot refuses instead of capturing the wrong Conversation.
 
 ### How a capture starts
 

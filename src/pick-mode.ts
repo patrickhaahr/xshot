@@ -56,9 +56,10 @@ export type PickOutcome =
  * widens it to the enclosing element, ↓ or the wheel turned down narrows it back the way it
  * came, a click chooses it and Escape leaves.
  *
- * While Pick mode lasts the page receives no button presses, and neither the navigation keys
- * nor the wheel scroll it. When the promise resolves, the highlight and every listener are
- * gone, so the page behaves as before.
+ * While Pick mode lasts the page receives no button presses. Unmodified ↑ / ↓ and vertical
+ * wheel turns navigate the highlight instead of scrolling; other scrolling keys, sideways
+ * wheel turns and Ctrl+wheel keep their normal behaviour. When the promise resolves, the
+ * highlight and every listener are gone, so the page behaves as before.
  *
  * @returns The element the user chose and where its Capture goes, or that they cancelled.
  */
@@ -94,18 +95,14 @@ export function pick(): Promise<PickOutcome> {
     highlight.style.height = `${bounds.height}px`
   }
 
-  function follow(event: MouseEvent): void {
+  function followCursor(event: MouseEvent): void {
     if (!(event.target instanceof Element) || event.target === hovered) return
     hovered = event.target
 
-    // A widened highlight stays while the cursor moves inside it, so a small slip of the
-    // mouse before clicking doesn't lose it. Narrowing then heads for the cursor.
-    if (highlighted !== null && narrower.length > 0 && highlighted.contains(hovered)) {
-      narrower = pathBetween(highlighted, hovered)
-    } else {
-      highlighted = hovered
-      narrower = []
-    }
+    // Moving to a different element starts a new path. Movement within the same hovered
+    // element returned above, preserving the widened highlight and the actual widen stack.
+    highlighted = hovered
+    narrower = []
 
     cover()
   }
@@ -166,7 +163,7 @@ export function pick(): Promise<PickOutcome> {
       event.stopImmediatePropagation()
 
       if (event.type !== "click") return
-      follow(event)
+      followCursor(event)
 
       if (highlighted === null) return
 
@@ -202,26 +199,11 @@ export function pick(): Promise<PickOutcome> {
     // Listening on the window in the capture phase runs before any of the page's own
     // listeners on its elements, so stopping an event there keeps it from the page.
     const options = { capture: true, signal: listening.signal }
-    window.addEventListener("mousemove", follow, options)
+    window.addEventListener("mousemove", followCursor, options)
     window.addEventListener("scroll", cover, { ...options, passive: true })
     window.addEventListener("wheel", turnWheel, { ...options, passive: false })
     window.addEventListener("keydown", navigate, options)
 
     for (const type of PRESS_EVENTS) window.addEventListener(type, press, options)
   })
-}
-
-/**
- * The elements from `inner` up to, but not including, `outer`: the way back down from
- * `outer` to `inner`, with the first step last.
- */
-function pathBetween(outer: Element, inner: Element): Element[] {
-  const path: Element[] = []
-
-  for (let element: Element | null = inner; element !== null && element !== outer;) {
-    path.push(element)
-    element = element.parentElement
-  }
-
-  return path
 }
