@@ -98,6 +98,10 @@ function warningMessage(partial: CaptureWarning): string {
       return "Partial Capture: X shows only the start of a quoted post."
     case "root-post-missing":
       return "Partial Capture: the Conversation doesn't start at the root Post."
+    case "images-not-loaded":
+      return partial.count === 1
+        ? "Partial Capture: 1 image in the Conversation couldn't be loaded."
+        : `Partial Capture: ${partial.count} images in the Conversation couldn't be loaded.`
     default:
       return casesHandled(partial)
   }

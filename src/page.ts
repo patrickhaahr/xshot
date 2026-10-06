@@ -1,5 +1,5 @@
 import { planCapture, startPostCapture } from "./capture-plan"
-import type { CaptureStart, Destination, Layout } from "./capture-plan"
+import type { CaptureRequest, Destination, Layout } from "./capture-plan"
 import { dismissConfirmation, showConfirmation, showFailure, showRefusal } from "./confirmation"
 import type { CaptureResponse, Measurement, PageCommand, WorkerRequest } from "./messages"
 import { pick } from "./pick-mode"
@@ -242,8 +242,12 @@ async function measurePostWhenRendered(
     // page scrolls.
     const focal = focalPost(document)
 
-    await Promise.all((focal === null ? [] : conversationOf(focal)).map(imagesLoaded))
     await expandTruncatedText(input)
+
+    const expandedFocal = focalPost(document) ?? focal
+    await Promise.all(
+      (expandedFocal === null ? [] : conversationOf(expandedFocal)).map(imagesLoaded)
+    )
   }
 
   // Planned again: Truncated text that didn't expand is still listed and makes a Partial Capture.
@@ -281,10 +285,7 @@ async function scrollToRootPost(): Promise<void> {
  * Click the "Show more" controls the plan lists. X expands the text in place and removes the
  * control, so this waits until every control is gone, or gives up after a limit.
  */
-async function expandTruncatedText(input: {
-  readonly start: CaptureStart
-  readonly destination: Destination
-}): Promise<void> {
+async function expandTruncatedText(input: CaptureRequest): Promise<void> {
   // Only what to expand is needed, so nothing is measured yet.
   const planned = planHere(input, UNMEASURED)
 
@@ -306,23 +307,26 @@ type Measured = { readonly measurement: Measurement; readonly restore: () => voi
 const UNMEASURED: Layout = {
   boundsOf: () => ({ x: 0, y: 0, width: 0, height: 0 }),
   scroll: { x: 0, y: 0 },
+  imageLoaded,
 }
 
 /**
  * Plan the Capture once the viewport has settled, with its Clutter out of the layout. The
  * Clutter stays out until `restore` is called, so the screenshot doesn't show it either.
  */
-async function measureWhenSettled(input: {
-  readonly start: CaptureStart
-  readonly destination: Destination
-}): Promise<Measured> {
+async function measureWhenSettled(input: CaptureRequest): Promise<Measured> {
   await viewportSettled()
 
   // The Clutter changes the Target's size, so it is planned once unmeasured to learn the
   // Clutter, and measured only once the Clutter is out of the layout.
   const unmeasured = planHere(input, UNMEASURED)
   const restore = removeFromLayout(unmeasured._tag === "ok" ? unmeasured.value.clutter : [])
-  const planned = planHere(input)
+
+  const planned = planHere(input, {
+    boundsOf: (element) => element.getBoundingClientRect(),
+    scroll: { x: window.scrollX, y: window.scrollY },
+    imageLoaded,
+  })
 
   if (planned._tag === "err") {
     restore()
@@ -375,15 +379,9 @@ function removeFromLayout(elements: ReadonlyArray<Element>): () => void {
 }
 
 /**
- * Plan a Capture of this page, measured as it is laid out now unless another layout is given.
+ * Plan a Capture of this page in the given layout, including its current image load state.
  */
-function planHere(
-  input: { readonly start: CaptureStart; readonly destination: Destination },
-  layout: Layout = {
-    boundsOf: (element) => element.getBoundingClientRect(),
-    scroll: { x: window.scrollX, y: window.scrollY },
-  }
-): ReturnType<typeof planCapture> {
+function planHere(input: CaptureRequest, layout: Layout): ReturnType<typeof planCapture> {
   return planCapture({
     page: document,
     start: input.start,
@@ -416,6 +414,11 @@ function observedUntil(done: () => boolean, limitMs: number): Promise<void> {
     observer.observe(document, { childList: true, subtree: true })
     check()
   })
+}
+
+/** Whether the browser loaded an image successfully, including already-complete failures. */
+function imageLoaded(image: Element): boolean {
+  return image instanceof HTMLImageElement && image.complete && image.naturalWidth > 0
 }
 
 /** Resolve once every image in an element has loaded or failed, or after a limit. */

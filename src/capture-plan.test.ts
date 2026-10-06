@@ -37,16 +37,21 @@ function select(page: Document, selector: string): Element {
   return element
 }
 
-/** A layout that places the given elements where the test says and everything else nowhere. */
+/**
+ * A layout that places the given elements where the test says and everything else nowhere, in
+ * which every image has loaded except the `unloaded` ones.
+ */
 function layoutOf(
   bounds: ReadonlyArray<readonly [Element, Rect]>,
-  scroll: Layout["scroll"]
+  scroll: Layout["scroll"],
+  unloaded: ReadonlyArray<Element> = []
 ): Layout {
   const byElement = new Map(bounds)
 
   return {
     boundsOf: (element) => byElement.get(element) ?? { x: 0, y: 0, width: 0, height: 0 },
     scroll,
+    imageLoaded: (image) => !unloaded.includes(image),
   }
 }
 
@@ -797,4 +802,45 @@ test("a Post Capture whose Conversation starts below the root Post is a Partial 
 
   expect(plan.target.length).toBe(4)
   expect(plan.warnings).toEqual([{ _tag: "root-post-missing" }])
+})
+
+/** The first image in an element of a saved page. */
+function firstImageIn(element: Element): Element {
+  const image = element.querySelector("img")
+
+  if (image === null) throw new Error("The element has no image")
+
+  return image
+}
+
+test("a Post Capture with an image in the Conversation that didn't load is a Partial Capture", async () => {
+  const page = await loadSavedPage("x-status-deep-reply.html")
+  // One image in the second Post, a Reply to the root, and one in the Reply below the Focal post.
+  const unloaded = [nth(page, "article", 1), nth(page, "article", 5)].map(firstImageIn)
+
+  const plan = planOf(
+    planCapture({
+      page,
+      start: { _tag: "post", post: { handle: "BrandonLuuMD", postId: "2100910333376278960" } },
+      destination: "clipboard",
+      url: new URL("https://x.com/BrandonLuuMD/status/2100910333376278960"),
+      now: new Date(2026, 9, 5, 12, 38, 42),
+      layout: layoutOf([], { x: 0, y: 0 }, unloaded),
+    })
+  )
+
+  expect(plan.warnings).toEqual([{ _tag: "images-not-loaded", count: 1 }])
+
+  const loadedPlan = planOf(
+    planCapture({
+      page,
+      start: { _tag: "post", post: { handle: "BrandonLuuMD", postId: "2100910333376278960" } },
+      destination: "clipboard",
+      url: new URL("https://x.com/BrandonLuuMD/status/2100910333376278960"),
+      now: new Date(2026, 9, 5, 12, 38, 42),
+      layout: layoutOf([], { x: 0, y: 0 }, unloaded.slice(1)),
+    })
+  )
+
+  expect(loadedPlan.warnings).toEqual([])
 })

@@ -40,6 +40,18 @@ export type PostCaptureStart = { readonly _tag: "post"; readonly post: PostRef }
 /** Where the user asked for the Capture to go. */
 export type Destination = "clipboard" | "download"
 
+/** A Capture the user asked for: how it was started and where it goes. */
+export type CaptureRequest = { readonly start: CaptureStart; readonly destination: Destination }
+
+/**
+ * A Post Capture the user asked for. It is plain data, so it can travel from the right-clicked
+ * page to the Post's status page.
+ */
+export type PostCaptureRequest = {
+  readonly start: PostCaptureStart
+  readonly destination: Destination
+}
+
 /** Where a finished Capture is delivered, with what a Download needs. */
 export type DestinationPlan =
   | { readonly _tag: "clipboard" }
@@ -47,8 +59,8 @@ export type DestinationPlan =
   | { readonly _tag: "download"; readonly filename: string }
 
 /**
- * The page layout the plan reads. The browser measures it; a test provides it, because
- * happy-dom does no layout.
+ * How the browser rendered the page: the layout the plan reads and which images loaded. The
+ * browser provides it; a test does, because happy-dom neither lays out nor loads images.
  */
 export type Layout = {
   /** The element's border box relative to the viewport, as `getBoundingClientRect()` reports it. */
@@ -56,6 +68,9 @@ export type Layout = {
 
   /** How far the document is scrolled, in CSS pixels. */
   readonly scroll: { readonly x: number; readonly y: number }
+
+  /** Whether an image has loaded, rather than failed or still loading. */
+  readonly imageLoaded: (image: Element) => boolean
 }
 
 /** What a Capture shows and where it is on the page. */
@@ -110,6 +125,8 @@ export type CaptureWarning =
    * one, although that Post replies to one.
    */
   | { readonly _tag: "root-post-missing" }
+  /** Images in the Conversation that failed to load, or hadn't loaded in time. */
+  | { readonly _tag: "images-not-loaded"; readonly count: number }
 
 /** Why no Capture is taken. */
 export type CaptureRefusal =
@@ -146,18 +163,10 @@ export function startPostCapture(clicked: Element): Result<PostCaptureStart, Cap
   return ok({ _tag: "post", post: ref })
 }
 
-/**
- * Decide what a Capture shows and which part of the page to crop, or why there is no Capture.
- *
- * @param input - How the Capture was started, where it goes, the page's address, the current
- *   time and the page layout to measure it in.
- * @returns The plan for the Capture, or the reason it is refused.
- */
-export function planCapture(input: {
+/** What a Capture is planned from: the request, and the page it is taken on as rendered now. */
+export type PlanInput = CaptureRequest & {
   /** The page being captured. For a Post Capture, the clicked Post's own status page. */
   readonly page: Document
-  readonly start: CaptureStart
-  readonly destination: Destination
 
   /** The address of the page being captured. */
   readonly url: URL
@@ -165,7 +174,16 @@ export function planCapture(input: {
   /** When the Capture was taken; a Download's filename gives it in local time. */
   readonly now: Date
   readonly layout: Layout
-}): Result<CapturePlan, CaptureRefusal> {
+}
+
+/**
+ * Decide what a Capture shows and which part of the page to crop, or why there is no Capture.
+ *
+ * @param input - How the Capture was started, where it goes, the page's address, the current
+ *   time and how the page is rendered.
+ * @returns The plan for the Capture, or the reason it is refused.
+ */
+export function planCapture(input: PlanInput): Result<CapturePlan, CaptureRefusal> {
   const { layout } = input
   const targeted = targetOf(input)
 
@@ -187,7 +205,7 @@ export function planCapture(input: {
     },
     destination: planDestination(input),
     expand: input.start._tag === "post" ? showMoreIn(target) : [],
-    warnings: warningsOf({ start: input.start, target }),
+    warnings: warningsOf(input, target),
   })
 }
 
@@ -195,10 +213,7 @@ export function planCapture(input: {
  * What the Capture shows: the picked element, or the Conversation ending at the Focal post of
  * the clicked Post's status page.
  */
-function targetOf(input: {
-  readonly page: Document
-  readonly start: CaptureStart
-}): Result<Target, CaptureRefusal> {
+function targetOf(input: PlanInput): Result<Target, CaptureRefusal> {
   const { page, start } = input
 
   switch (start._tag) {
@@ -219,29 +234,30 @@ function targetOf(input: {
 
 /**
  * Why the Capture is a Partial Capture. A Pick Capture shows what was picked as rendered, so
- * only a Post Capture's Conversation is checked for Posts X couldn't show and for text it
- * shortened. A Post Capture is planned again after expanding, so Truncated text still there
- * then is text that expanding failed to show.
+ * only a Post Capture's Conversation is checked for Posts X couldn't show, images that didn't
+ * load and text X shortened. A Post Capture is planned again after expanding, so Truncated text
+ * still there then is text that expanding failed to show.
  */
-function warningsOf(input: {
-  readonly start: CaptureStart
-  readonly target: Target
-}): ReadonlyArray<CaptureWarning> {
+function warningsOf(input: PlanInput, target: Target): ReadonlyArray<CaptureWarning> {
   if (input.start._tag === "pick") return []
 
   const warnings: CaptureWarning[] = []
 
-  if (continuesFromAbove(input.target[0])) warnings.push({ _tag: "root-post-missing" })
+  if (continuesFromAbove(target[0])) warnings.push({ _tag: "root-post-missing" })
 
-  const unavailable = input.target.filter(isPlaceholder).length
+  const unavailable = target.filter(isPlaceholder).length
 
   if (unavailable > 0) warnings.push({ _tag: "unavailable-posts", count: unavailable })
 
-  if (showMoreIn(input.target).length > 0) warnings.push({ _tag: "not-expanded" })
+  const notLoaded = target
+    .flatMap((item) => [...item.querySelectorAll("img")])
+    .filter((image) => !input.layout.imageLoaded(image)).length
 
-  if (cutOffQuotedPostsIn(input.target).length > 0) {
-    warnings.push({ _tag: "quoted-post-cut-off" })
-  }
+  if (notLoaded > 0) warnings.push({ _tag: "images-not-loaded", count: notLoaded })
+
+  if (showMoreIn(target).length > 0) warnings.push({ _tag: "not-expanded" })
+
+  if (cutOffQuotedPostsIn(target).length > 0) warnings.push({ _tag: "quoted-post-cut-off" })
 
   return warnings
 }
@@ -256,12 +272,7 @@ function boundsAround(rects: ReadonlyArray<Rect>): Rect {
   return { x: left, y: top, width: right - left, height: bottom - top }
 }
 
-function planDestination(input: {
-  readonly start: CaptureStart
-  readonly destination: Destination
-  readonly url: URL
-  readonly now: Date
-}): DestinationPlan {
+function planDestination(input: PlanInput): DestinationPlan {
   switch (input.destination) {
     case "clipboard":
       return { _tag: "clipboard" }
@@ -274,11 +285,7 @@ function planDestination(input: {
  * A Download's filename: a Post Capture is named after the right-clicked Post, a Pick Capture
  * after the site and the local time it was taken.
  */
-function downloadFilename(input: {
-  readonly start: CaptureStart
-  readonly url: URL
-  readonly now: Date
-}): string {
+function downloadFilename(input: PlanInput): string {
   const { start } = input
 
   switch (start._tag) {
