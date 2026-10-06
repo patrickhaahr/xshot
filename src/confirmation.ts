@@ -1,4 +1,4 @@
-import type { CaptureRefusal, CaptureWarning } from "./capture-plan"
+import type { CaptureRefusal, CaptureWarning, Destination } from "./capture-plan"
 import { mountOverlay } from "./overlay"
 import type { Overlay } from "./overlay"
 import { casesHandled } from "./prelude"
@@ -52,12 +52,12 @@ let current: Overlay | null = null
  * itself after a few seconds.
  *
  * @param png - The Capture that was delivered.
- * @param message - What happened to it, such as "Copied to Clipboard".
+ * @param destination - Where the Capture was delivered.
  * @param warnings - Why it is a Partial Capture; empty when it is complete.
  */
 export async function showConfirmation(
   png: Blob,
-  message: string,
+  destination: Destination,
   warnings: ReadonlyArray<CaptureWarning>
 ): Promise<void> {
   // A canvas rather than an <img>, because a page's Content Security Policy can block blob:
@@ -75,6 +75,7 @@ export async function showConfirmation(
   thumbnail.getContext("2d")?.drawImage(image, 0, 0, thumbnail.width, thumbnail.height)
   image.close()
 
+  const message = destination === "clipboard" ? "Copied to Clipboard" : "Saved to Downloads"
   show([thumbnail, text(message), ...warnings.map(warning)])
 }
 

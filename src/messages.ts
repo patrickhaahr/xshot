@@ -7,7 +7,7 @@ import type {
   CaptureWarning,
   Destination,
   DestinationPlan,
-  PostCaptureStart,
+  PostCaptureRequest,
   Rect,
 } from "./capture-plan"
 
@@ -23,11 +23,7 @@ export type PageCommand =
    * The debugger is attached to the clicked Post's status page, opened in a background tab:
    * wait for the Post to render and the viewport to settle, then measure the Target.
    */
-  | {
-      readonly type: "measure-post"
-      readonly start: PostCaptureStart
-      readonly destination: Destination
-    }
+  | ({ readonly type: "measure-post" } & PostCaptureRequest)
 
 /** The page's answer to a measure command, once the viewport has settled. */
 export type Measurement =
@@ -54,11 +50,7 @@ export type WorkerRequest =
   /** Capture the Target picked on the sending page. */
   | { readonly type: "capture" }
   /** Capture a Post from its own status page, opened in a background tab. */
-  | {
-      readonly type: "capture-post"
-      readonly start: PostCaptureStart
-      readonly destination: Destination
-    }
+  | ({ readonly type: "capture-post" } & PostCaptureRequest)
 
 /**
  * The background worker's answer to a capture request. A Download is already saved when the

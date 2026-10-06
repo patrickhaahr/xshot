@@ -15,6 +15,9 @@ const POST_MENU_ITEMS: ReadonlyArray<{
   { id: "screenshot-post-to-file", title: "Screenshot post to file", destination: "download" },
 ]
 
+/** The longest wait for a debugger rendering or screenshot command before refusing to hang. */
+const CAPTURE_LIMIT_MS = 15_000
+
 /** The longest wait for a Post's status page to load in its background tab. */
 const STATUS_PAGE_LOAD_LIMIT_MS = 30_000
 
@@ -34,7 +37,7 @@ chrome.contextMenus.onClicked.addListener((info, tab) => {
   const item = POST_MENU_ITEMS.find(({ id }) => id === info.menuItemId)
 
   if (item === undefined || tab?.id === undefined) return
-  void startPostCapture({
+  void onScreenshotPostMenu({
     tabId: tab.id,
     frameId: info.frameId ?? 0,
     destination: item.destination,
@@ -61,11 +64,7 @@ chrome.runtime.onMessage.addListener(
         void capture(tab.id, { type: "measure" }).then(sendResponse)
         break
       case "capture-post":
-        void captureFromStatusPage(request, {
-          tabId: tab.id,
-          index: tab.index,
-          windowId: tab.windowId,
-        }).then(sendResponse)
+        void captureFromStatusPage(request, tab).then(sendResponse)
         break
     }
 
@@ -74,24 +73,18 @@ chrome.runtime.onMessage.addListener(
 )
 
 /** Tell the right-clicked page to start a Post Capture from the element under the right-click. */
-async function startPostCapture(input: {
+async function onScreenshotPostMenu(input: {
   readonly tabId: number
   readonly frameId: number
   readonly destination: Destination
 }): Promise<void> {
-  // The page script runs on every X page from the manifest, so it saw the right-click. It is
-  // missing only from X tabs opened before XShot was installed or reloaded.
-  const delivered = await attempt(
-    chrome.tabs.sendMessage<PageCommand>(
-      input.tabId,
-      { type: "start-post-capture", destination: input.destination },
-      { frameId: input.frameId }
-    )
-  )
+  const delivered = await sendPageCommand({
+    tabId: input.tabId,
+    frameId: input.frameId,
+    command: { type: "start-post-capture", destination: input.destination },
+  })
 
-  if (delivered._tag === "err") {
-    console.warn(`XShot isn't loaded on this page; reload it: ${delivered.error.message}`)
-  }
+  if (delivered._tag === "err") await showUnavailablePage(input.tabId, delivered.error)
 }
 
 /**
@@ -100,7 +93,7 @@ async function startPostCapture(input: {
  */
 async function captureFromStatusPage(
   request: Extract<WorkerRequest, { readonly type: "capture-post" }>,
-  opener: { readonly tabId: number; readonly index: number; readonly windowId: number }
+  opener: chrome.tabs.Tab
 ): Promise<CaptureResponse> {
   const created = await attempt(
     chrome.tabs.create({
@@ -108,7 +101,7 @@ async function captureFromStatusPage(
       active: false,
       index: opener.index + 1,
       windowId: opener.windowId,
-      openerTabId: opener.tabId,
+      openerTabId: opener.id,
     })
   )
 
@@ -142,12 +135,12 @@ function tabLoaded(tabId: number): Promise<Result<void, Error>> {
 
     function settle(result: Result<void, Error>): void {
       clearTimeout(limit)
-      chrome.tabs.onUpdated.removeListener(follow)
+      chrome.tabs.onUpdated.removeListener(onTabUpdated)
       chrome.tabs.onRemoved.removeListener(closed)
       resolve(result)
     }
 
-    function follow(updatedId: number, change: chrome.tabs.OnUpdatedInfo): void {
+    function onTabUpdated(updatedId: number, change: chrome.tabs.OnUpdatedInfo): void {
       if (updatedId === tabId && change.status === "complete") settle(ok(undefined))
     }
 
@@ -155,7 +148,7 @@ function tabLoaded(tabId: number): Promise<Result<void, Error>> {
       if (removedId === tabId) settle(err(new Error("its tab was closed")))
     }
 
-    chrome.tabs.onUpdated.addListener(follow)
+    chrome.tabs.onUpdated.addListener(onTabUpdated)
     chrome.tabs.onRemoved.addListener(closed)
 
     // The tab can finish loading before the listeners are added. Settling twice is harmless.
@@ -166,25 +159,40 @@ function tabLoaded(tabId: number): Promise<Result<void, Error>> {
 }
 
 async function enterPickMode(tabId: number): Promise<void> {
-  // The page script stays loaded until the page navigates and acknowledges the command, so
-  // it is injected only when nothing answers.
+  const delivered = await sendPageCommand({ tabId, command: { type: "enter-pick-mode" } })
+
+  if (delivered._tag === "err") await showUnavailablePage(tabId, delivered.error)
+}
+
+/** Inject the page script and retry when a tab predates installation or an extension reload. */
+async function sendPageCommand(input: {
+  readonly tabId: number
+  readonly frameId?: number
+  readonly command: PageCommand
+}): Promise<Result<void, Error>> {
+  const { tabId, frameId = 0, command } = input
+  await attempt(chrome.action.setBadgeText({ tabId, text: "" }))
+  await attempt(chrome.action.setTitle({ tabId, title: "XShot" }))
+
   const delivered = await attempt(
-    chrome.tabs.sendMessage<PageCommand>(tabId, { type: "enter-pick-mode" })
+    chrome.tabs.sendMessage<PageCommand, void>(tabId, command, { frameId })
   )
 
-  if (delivered._tag === "ok") return
+  if (delivered._tag === "ok") return delivered
 
   const injected = await attempt(
-    chrome.scripting.executeScript({ target: { tabId }, files: ["page.js"] })
+    chrome.scripting.executeScript({ target: { tabId, frameIds: [frameId] }, files: ["page.js"] })
   )
 
-  if (injected._tag === "err") {
-    console.warn(`XShot can't run on this page: ${injected.error.message}`)
+  if (injected._tag === "err") return injected
 
-    return
-  }
+  return attempt(chrome.tabs.sendMessage<PageCommand, void>(tabId, command, { frameId }))
+}
 
-  await attempt(chrome.tabs.sendMessage<PageCommand>(tabId, { type: "enter-pick-mode" }))
+/** A visible fallback when scripting is unavailable and an on-page Confirmation is impossible. */
+async function showUnavailablePage(tabId: number, error: Error): Promise<void> {
+  await attempt(chrome.action.setBadgeText({ tabId, text: "!" }))
+  await attempt(chrome.action.setTitle({ tabId, title: `XShot couldn't run: ${error.message}` }))
 }
 
 /**
@@ -217,6 +225,21 @@ async function screenshot(input: {
 }): Promise<CaptureResponse> {
   const { debuggee, tabId, measure } = input
 
+  if (measure.type === "measure-post") {
+    // Keep the status page rendering without selecting its tab or moving the user's focus.
+    const focused = await withinCaptureLimit(
+      chrome.debugger.sendCommand(debuggee, "Emulation.setFocusEmulationEnabled", { enabled: true })
+    )
+
+    if (focused._tag === "err") return failed("enable background rendering", focused.error)
+
+    const active = await withinCaptureLimit(
+      chrome.debugger.sendCommand(debuggee, "Page.setWebLifecycleState", { state: "active" })
+    )
+
+    if (active._tag === "err") return failed("activate background rendering", active.error)
+  }
+
   // Attaching shows the "started debugging this browser" banner, which shrinks the viewport.
   // The page measures only once that resize is over: capturing while the page is still
   // resizing produces repeated tiles instead of the Target.
@@ -228,7 +251,7 @@ async function screenshot(input: {
 
   const { crop, devicePixelRatio, destination, warnings } = measured.value
 
-  const shot = await attempt(
+  const shot = await withinCaptureLimit(
     chrome.debugger.sendCommand(debuggee, "Page.captureScreenshot", {
       format: "png",
       captureBeyondViewport: true,
@@ -287,24 +310,38 @@ function downloadFinished(downloadId: number): Promise<Result<void, Error>> {
   return new Promise((resolve) => {
     function settle(state: string, error: string | undefined): void {
       if (state === "in_progress") return
-      chrome.downloads.onChanged.removeListener(follow)
+      chrome.downloads.onChanged.removeListener(onDownloadChanged)
       resolve(state === "complete" ? ok(undefined) : err(new Error(error ?? "it was interrupted")))
     }
 
-    function follow(delta: chrome.downloads.DownloadDelta): void {
+    function onDownloadChanged(delta: chrome.downloads.DownloadDelta): void {
       const state = delta.state?.current
 
       if (delta.id !== downloadId || state === undefined) return
       settle(state, delta.error?.current)
     }
 
-    chrome.downloads.onChanged.addListener(follow)
+    chrome.downloads.onChanged.addListener(onDownloadChanged)
 
     // The download can finish before the listener is added. Settling twice is harmless.
     void attempt(chrome.downloads.search({ id: downloadId })).then((found) => {
       if (found._tag === "ok" && found.value[0] !== undefined) {
         settle(found.value[0].state, found.value[0].error)
       }
+    })
+  })
+}
+
+/** Bound a protocol command; capture's finally detaches even if the command never answers. */
+function withinCaptureLimit<T>(operation: Promise<T>): Promise<Result<T, Error>> {
+  return new Promise((resolve) => {
+    const limit = setTimeout(() => {
+      resolve(err(new Error("it took longer than 15 seconds")))
+    }, CAPTURE_LIMIT_MS)
+
+    void attempt(operation).then((result) => {
+      clearTimeout(limit)
+      resolve(result)
     })
   })
 }
