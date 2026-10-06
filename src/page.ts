@@ -1,11 +1,11 @@
 import { planCapture, startPostCapture } from "./capture-plan"
-import type { CaptureStart, Destination, Layout } from "./capture-plan"
+import type { CaptureRequest, Destination, Layout } from "./capture-plan"
 import { dismissConfirmation, showConfirmation, showFailure, showRefusal } from "./confirmation"
 import type { CaptureResponse, Measurement, PageCommand, WorkerRequest } from "./messages"
 import { pick } from "./pick-mode"
 import type { Picked } from "./pick-mode"
 import { attempt } from "./prelude"
-import { conversationOf, focalPost } from "./x-markup"
+import { continuesFromAbove, conversationOf, focalPost } from "./x-markup"
 
 /** How long the viewport must go without resizing before the Target is measured. */
 const SETTLE_QUIET_MS = 300
@@ -16,6 +16,9 @@ const SETTLE_LIMIT_MS = 2000
 /** The longest wait for a status page to render its Focal post before planning anyway. */
 const FOCAL_POST_LIMIT_MS = 15_000
 
+/** The longest wait for X to render the root Post at the top of a status page. */
+const ROOT_POST_LIMIT_MS = 3000
+
 /** The longest wait for the Target's images to load before measuring anyway. */
 const IMAGES_LIMIT_MS = 5000
 
@@ -23,7 +26,7 @@ const IMAGES_LIMIT_MS = 5000
 const EXPAND_LIMIT_MS = 5000
 
 /** Whether Pick mode or its Capture is under way; a second Pick mode would put its highlight in the Capture. */
-let busy = false
+let pickInProgress = false
 
 /** The element under the latest right-click, where a Post Capture from the menu starts. */
 let rightClicked: Element | null = null
@@ -46,7 +49,7 @@ chrome.runtime.onMessage.addListener(
       case "enter-pick-mode":
         // The acknowledgement tells the worker this script is already loaded.
         sendResponse()
-        void pickAndCapture()
+        void runPickMode()
 
         return false
       case "start-post-capture":
@@ -65,18 +68,18 @@ chrome.runtime.onMessage.addListener(
   }
 )
 
-async function pickAndCapture(): Promise<void> {
-  if (busy) return
-  busy = true
+async function runPickMode(): Promise<void> {
+  if (pickInProgress) return
+  pickInProgress = true
 
   try {
-    await pickThenCapture()
+    await captureFromPickMode()
   } finally {
-    busy = false
+    pickInProgress = false
   }
 }
 
-async function pickThenCapture(): Promise<void> {
+async function captureFromPickMode(): Promise<void> {
   // Removed before the highlight appears, so no Confirmation is on the page during a Capture.
   dismissConfirmation()
   const picked = await pick()
@@ -95,7 +98,9 @@ async function postCapture(destination: Destination): Promise<void> {
 
   const started = rightClicked === null ? null : startPostCapture(rightClicked)
 
-  if (started === null) return showRefusal({ _tag: "no-post" })
+  // Injection after a menu click cannot recover the contextmenu event it missed.
+  if (started === null)
+    return showFailure("XShot is now loaded. Right-click the Post again to capture it.")
 
   if (started._tag === "err") return showRefusal(started.error)
 
@@ -127,40 +132,42 @@ async function copyToClipboard(response: Promise<CaptureResponse>): Promise<void
     navigator.clipboard.write([new ClipboardItem({ "image/png": png })])
   )
 
-  const captured = await response
+  // A refused or failed Capture also fails the write, so show its own reason first.
+  const captured = captureOrShowFailure(await response)
 
-  // A refused or failed Capture also fails the write, so its own reason is the one worth showing.
-  switch (captured._tag) {
-    case "refused":
-      return showRefusal(captured.refusal)
-    case "failed":
-      return showFailure(captured.reason)
-    case "captured":
-      break
-  }
+  if (captured === null) return
 
   if (written._tag === "err") {
     return showFailure(`Couldn't copy to the Clipboard: ${written.error.message}`)
   }
 
-  await showConfirmation(await png, "Copied to Clipboard", captured.warnings)
+  await showConfirmation(await png, "clipboard", captured.warnings)
 }
 
 async function confirmDownload(response: Promise<CaptureResponse>): Promise<void> {
   // The worker saves the Download before it answers.
-  const captured = await response
+  const captured = captureOrShowFailure(await response)
 
-  switch (captured._tag) {
-    case "refused":
-      return showRefusal(captured.refusal)
-    case "failed":
-      return showFailure(captured.reason)
+  if (captured === null) return
+
+  await showConfirmation(pngFromBase64(captured.pngBase64), "download", captured.warnings)
+}
+
+/** Show a refused or failed Capture's Confirmation, or return the image that was captured. */
+function captureOrShowFailure(
+  response: CaptureResponse
+): Extract<CaptureResponse, { readonly _tag: "captured" }> | null {
+  switch (response._tag) {
     case "captured":
-      return showConfirmation(
-        pngFromBase64(captured.pngBase64),
-        "Saved to Downloads",
-        captured.warnings
-      )
+      return response
+    case "refused":
+      showRefusal(response.refusal)
+
+      return null
+    case "failed":
+      showFailure(response.reason)
+
+      return null
   }
 }
 
@@ -229,12 +236,22 @@ async function requestCapture(request: WorkerRequest): Promise<CaptureResponse> 
 async function measurePostWhenRendered(
   command: Extract<PageCommand, { readonly type: "measure-post" }>
 ): Promise<Measurement> {
-  const input = { start: command.start, destination: command.destination }
-  const focal = await rendered(() => focalPost(document), FOCAL_POST_LIMIT_MS)
+  const input = command
+  await observedUntil(() => focalPost(document) !== null, FOCAL_POST_LIMIT_MS)
 
-  if (focal !== null) {
-    await Promise.all(conversationOf(focal).map(imagesLoaded))
+  if (focalPost(document) !== null) {
+    await scrollToRootPost()
+
+    // Found again, because X renders other cells, and can render the Focal post anew, as the
+    // page scrolls.
+    const focal = focalPost(document)
+
     await expandTruncatedText(input)
+
+    const expandedFocal = focalPost(document) ?? focal
+    await Promise.all(
+      (expandedFocal === null ? [] : conversationOf(expandedFocal)).map(imagesLoaded)
+    )
   }
 
   // Planned again: Truncated text that didn't expand is still listed and makes a Partial Capture.
@@ -245,15 +262,36 @@ async function measurePostWhenRendered(
 }
 
 /**
+ * Scroll to the top of the status page, where X renders the Conversation's earliest Posts, and
+ * wait until its topmost Post is the root, or give up after a limit. X's list keeps only the
+ * Posts near the viewport, so in a long Conversation the Posts above the Focal post can be
+ * missing until the page scrolls up to them.
+ */
+async function scrollToRootPost(): Promise<void> {
+  const { scrollX, scrollY } = window
+  window.scrollTo(0, 0)
+
+  await observedUntil(() => {
+    const focal = focalPost(document)
+
+    return focal === null || !continuesFromAbove(conversationOf(focal)[0])
+  }, ROOT_POST_LIMIT_MS)
+
+  if (focalPost(document) !== null) return
+
+  // The Conversation is taller than X keeps rendered, so the Focal post went away. Go back to
+  // it: the Capture is then a Partial Capture that doesn't start at the root Post.
+  window.scrollTo(scrollX, scrollY)
+  await observedUntil(() => focalPost(document) !== null, FOCAL_POST_LIMIT_MS)
+}
+
+/**
  * Click the "Show more" controls the plan lists. X expands the text in place and removes the
  * control, so this waits until every control is gone, or gives up after a limit.
  */
-async function expandTruncatedText(input: {
-  readonly start: CaptureStart
-  readonly destination: Destination
-}): Promise<void> {
+async function expandTruncatedText(input: CaptureRequest): Promise<void> {
   // Only what to expand is needed, so nothing is measured yet.
-  const planned = planHere(input, UNMEASURED)
+  const planned = planOnPage(input, UNMEASURED)
 
   if (planned._tag === "err") return
 
@@ -273,23 +311,26 @@ type Measured = { readonly measurement: Measurement; readonly restore: () => voi
 const UNMEASURED: Layout = {
   boundsOf: () => ({ x: 0, y: 0, width: 0, height: 0 }),
   scroll: { x: 0, y: 0 },
+  imageLoaded,
 }
 
 /**
  * Plan the Capture once the viewport has settled, with its Clutter out of the layout. The
  * Clutter stays out until `restore` is called, so the screenshot doesn't show it either.
  */
-async function measureWhenSettled(input: {
-  readonly start: CaptureStart
-  readonly destination: Destination
-}): Promise<Measured> {
+async function measureWhenSettled(input: CaptureRequest): Promise<Measured> {
   await viewportSettled()
 
   // The Clutter changes the Target's size, so it is planned once unmeasured to learn the
   // Clutter, and measured only once the Clutter is out of the layout.
-  const unmeasured = planHere(input, UNMEASURED)
+  const unmeasured = planOnPage(input, UNMEASURED)
   const restore = removeFromLayout(unmeasured._tag === "ok" ? unmeasured.value.clutter : [])
-  const planned = planHere(input)
+
+  const planned = planOnPage(input, {
+    boundsOf: (element) => element.getBoundingClientRect(),
+    scroll: { x: window.scrollX, y: window.scrollY },
+    imageLoaded,
+  })
 
   if (planned._tag === "err") {
     restore()
@@ -342,15 +383,9 @@ function removeFromLayout(elements: ReadonlyArray<Element>): () => void {
 }
 
 /**
- * Plan a Capture of this page, measured as it is laid out now unless another layout is given.
+ * Plan a Capture of this page in the given layout, including its current image load state.
  */
-function planHere(
-  input: { readonly start: CaptureStart; readonly destination: Destination },
-  layout: Layout = {
-    boundsOf: (element) => element.getBoundingClientRect(),
-    scroll: { x: window.scrollX, y: window.scrollY },
-  }
-): ReturnType<typeof planCapture> {
+function planOnPage(input: CaptureRequest, layout: Layout): ReturnType<typeof planCapture> {
   return planCapture({
     page: document,
     start: input.start,
@@ -359,16 +394,6 @@ function planHere(
     now: new Date(),
     layout,
   })
-}
-
-/**
- * Resolve with the element `find` returns once the page has rendered it, or with null after a
- * limit.
- */
-async function rendered(find: () => Element | null, limitMs: number): Promise<Element | null> {
-  await observedUntil(() => find() !== null, limitMs)
-
-  return find()
 }
 
 /**
@@ -393,6 +418,11 @@ function observedUntil(done: () => boolean, limitMs: number): Promise<void> {
     observer.observe(document, { childList: true, subtree: true })
     check()
   })
+}
+
+/** Whether the browser loaded an image successfully, including already-complete failures. */
+function imageLoaded(image: Element): boolean {
+  return image instanceof HTMLImageElement && image.complete && image.naturalWidth > 0
 }
 
 /** Resolve once every image in an element has loaded or failed, or after a limit. */

@@ -91,6 +91,24 @@ export function conversationOf(focal: Element): readonly [Element, ...Element[]]
   return conversation
 }
 
+/** A Post's avatar, in the column where X draws the lines that join a Conversation's Posts. */
+const AVATAR = '[data-testid="Tweet-User-Avatar"]'
+
+/**
+ * Whether X joins a Post to a Post above it, which it replies to, with a line. The row above
+ * the avatar's row holds only a spacer, plus the start of that line when there is one.
+ * Placeholders have no avatar and no lines, so they never count.
+ *
+ * @param item - A Post or placeholder from `conversationOf`.
+ * @returns True when X shows a line above the Post's avatar.
+ */
+export function continuesFromAbove(item: Element): boolean {
+  const avatarRow = item.querySelector(AVATAR)?.parentElement?.parentElement
+  const rowAbove = avatarRow?.previousElementSibling?.firstElementChild
+
+  return (rowAbove?.childElementCount ?? 0) > 1
+}
+
 /**
  * Whether a Conversation item is X's placeholder for a Post it can't show, such as an
  * unavailable or deleted Post, rather than a Post.

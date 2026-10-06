@@ -1,4 +1,4 @@
-import type { CaptureRefusal, CaptureWarning } from "./capture-plan"
+import type { CaptureRefusal, CaptureWarning, Destination } from "./capture-plan"
 import { mountOverlay } from "./overlay"
 import type { Overlay } from "./overlay"
 import { casesHandled } from "./prelude"
@@ -52,12 +52,12 @@ let current: Overlay | null = null
  * itself after a few seconds.
  *
  * @param png - The Capture that was delivered.
- * @param message - What happened to it, such as "Copied to Clipboard".
+ * @param destination - Where the Capture was delivered.
  * @param warnings - Why it is a Partial Capture; empty when it is complete.
  */
 export async function showConfirmation(
   png: Blob,
-  message: string,
+  destination: Destination,
   warnings: ReadonlyArray<CaptureWarning>
 ): Promise<void> {
   // A canvas rather than an <img>, because a page's Content Security Policy can block blob:
@@ -75,6 +75,7 @@ export async function showConfirmation(
   thumbnail.getContext("2d")?.drawImage(image, 0, 0, thumbnail.width, thumbnail.height)
   image.close()
 
+  const message = destination === "clipboard" ? "Copied to Clipboard" : "Saved to Downloads"
   show([thumbnail, text(message), ...warnings.map(warning)])
 }
 
@@ -96,6 +97,12 @@ function warningMessage(partial: CaptureWarning): string {
       return 'Partial Capture: some "Show more" text couldn\'t be expanded.'
     case "quoted-post-cut-off":
       return "Partial Capture: X shows only the start of a quoted post."
+    case "root-post-missing":
+      return "Partial Capture: the Conversation doesn't start at the root Post."
+    case "images-not-loaded":
+      return partial.count === 1
+        ? "Partial Capture: 1 image in the Conversation couldn't be loaded."
+        : `Partial Capture: ${partial.count} images in the Conversation couldn't be loaded.`
     default:
       return casesHandled(partial)
   }
