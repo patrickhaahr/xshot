@@ -52,6 +52,10 @@ chrome.runtime.onMessage.addListener(
     sendResponse: (measurement?: Measurement) => void
   ) => {
     switch (command.type) {
+      case "ping":
+        sendResponse()
+
+        return false
       case "enter-pick-mode":
         // The acknowledgement tells the worker this script is already loaded.
         sendResponse()

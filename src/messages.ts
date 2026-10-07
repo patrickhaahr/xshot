@@ -13,6 +13,8 @@ import type {
 
 /** A command the background worker sends to the page script. */
 export type PageCommand =
+  /** Answered as soon as the page script runs, so the worker knows a new tab can take commands. */
+  | { readonly type: "ping" }
   /** The toolbar button was clicked. */
   | { readonly type: "enter-pick-mode" }
   /**
