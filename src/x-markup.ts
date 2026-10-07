@@ -109,6 +109,33 @@ export function continuesFromAbove(item: Element): boolean {
   return (rowAbove?.childElementCount ?? 0) > 1
 }
 
+/** `/<handle>`, the path of a profile page. */
+const PROFILE_PATH = /^\/\w{1,15}$/
+
+/** The parts of a Post whose "@handle" links aren't its "Replying to" line. */
+const NOT_REPLYING_TO = '[data-testid="User-Name"], [data-testid="tweetText"], div[role="link"]'
+
+/**
+ * Whether X marks a Post as a Reply with its "Replying to @handle" line, which a Reply shows
+ * above its text where the Post it replies to isn't shown with it, such as in a timeline. The
+ * line has neither a test id nor untranslated words, so it is recognised as an "@handle" link
+ * to a profile outside the Post's author, text and quoted post.
+ *
+ * @param post - A Post element.
+ * @returns True when the Post has a "Replying to" line.
+ */
+export function showsReplyingTo(post: Element): boolean {
+  return [...post.querySelectorAll("a[href]")].some((link) => {
+    const part = link.closest(NOT_REPLYING_TO)
+
+    return (
+      PROFILE_PATH.test(link.getAttribute("href") ?? "") &&
+      (link.textContent ?? "").trim().startsWith("@") &&
+      (part === null || !post.contains(part))
+    )
+  })
+}
+
 /**
  * Whether a Conversation item is X's placeholder for a Post it can't show, such as an
  * unavailable or deleted Post, rather than a Post.

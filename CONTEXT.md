@@ -23,7 +23,7 @@ The Post a status page is about, as opposed to the Posts above and below it in t
 _Avoid_: Main tweet, selected post
 
 **Target**:
-What a Capture shows. For a Post Capture it is the Conversation ending at the Post the user right-clicked, as that Post's own status page renders it; for a Pick Capture it is the element the user chose.
+What a Capture shows. For a Post Capture it is the Conversation ending at the Post the user right-clicked, as that Post's own status page renders it (or, for a Conversation of one captured in place, as the right-clicked page renders it); for a Pick Capture it is the element the user chose.
 _Avoid_: Node, element, selection
 
 **Clutter**:
@@ -37,7 +37,7 @@ Describes a Post or quoted post whose text X has shortened behind "Show more". A
 _Avoid_: Collapsed, cut off
 
 **Post not shown**:
-A Post Capture refusal when the requested Post is missing from its status page, or X shows a different Focal post. XShot refuses instead of capturing the wrong Conversation.
+A Post Capture refusal when the requested Post is missing from the page it is captured on (its status page, or the right-clicked page when captured in place), or X shows a different Focal post. XShot refuses instead of capturing the wrong Conversation.
 
 ### How a capture starts
 
@@ -54,7 +54,7 @@ Describes a Target too tall to fit in one image at full sharpness. An Oversized 
 _Avoid_: Too long, overflow
 
 **Post Capture**:
-A Capture started from the page's right-click menu on a Post: "Screenshot post" or "Screenshot post to file". Right-clicking inside a quoted post captures the Post that quotes it. Only offered on X.
+A Capture started from the page's right-click menu on a Post: "Screenshot post" or "Screenshot post to file". Right-clicking inside a quoted post captures the Post that quotes it. Only offered on X. It is captured **in place**, on the right-clicked page, when that page already shows the whole Conversation (the Focal post of the status page the user is on, or a Post that is neither a Reply nor Truncated), and otherwise on the Post's status page in a background tab (see ADR 0002).
 _Avoid_: Context-menu screenshot, quick capture
 
 **Pick mode**:

@@ -18,8 +18,17 @@ const POST_MENU_ITEMS: ReadonlyArray<{
 /** The longest wait for a debugger rendering or screenshot command before refusing to hang. */
 const CAPTURE_LIMIT_MS = 15_000
 
-/** The longest wait for a Post's status page to load in its background tab. */
+/** The longest wait for a Post's status page to start loading in its background tab. */
 const STATUS_PAGE_LOAD_LIMIT_MS = 30_000
+
+/** A screenshot this fast, in milliseconds, means a background tab is drawing. */
+const RENDERING_QUICK_MS = 50
+
+/** How many fast screenshots in a row show that a background tab keeps drawing. */
+const RENDERING_QUICK_SHOTS = 3
+
+/** How often to check whether the page script has started in a Post's background tab. */
+const PAGE_SCRIPT_POLL_MS = 50
 
 chrome.runtime.onInstalled.addListener(() => {
   for (const { id, title } of POST_MENU_ITEMS) {
@@ -89,7 +98,8 @@ async function onScreenshotPostMenu(input: {
 
 /**
  * Capture a Post from its own status page, opened in a background tab next to the page it was
- * right-clicked on and closed afterwards, so the user stays where they are.
+ * right-clicked on and closed afterwards, so the user stays where they are. The page asks for
+ * this only when it doesn't show the Post's whole Conversation itself.
  */
 async function captureFromStatusPage(
   request: Extract<WorkerRequest, { readonly type: "capture-post" }>,
@@ -112,10 +122,8 @@ async function captureFromStatusPage(
   if (tabId === undefined) return { _tag: "failed", reason: "Couldn't open the Post's status page" }
 
   try {
-    const loaded = await tabLoaded(tabId)
-
-    if (loaded._tag === "err") return failed("load the Post's status page", loaded.error)
-
+    // Captured as soon as the tab exists: the page script starts with the page and waits for X
+    // to render the Post itself, so X's load event, seconds later, doesn't matter.
     return await capture(tabId, {
       type: "measure-post",
       start: request.start,
@@ -126,36 +134,28 @@ async function captureFromStatusPage(
   }
 }
 
-/** Resolve once a tab has finished loading, or with an error if it closes or takes too long. */
-function tabLoaded(tabId: number): Promise<Result<void, Error>> {
-  return new Promise((resolve) => {
-    const limit = setTimeout(() => {
-      settle(err(new Error("it took too long")))
-    }, STATUS_PAGE_LOAD_LIMIT_MS)
+/**
+ * Resolve once the page script runs in a tab XShot just opened, or with an error if the tab
+ * closes or takes too long. It runs from the start of the page's load.
+ */
+async function pageScriptRunning(tabId: number): Promise<Result<void, Error>> {
+  const deadline = Date.now() + STATUS_PAGE_LOAD_LIMIT_MS
 
-    function settle(result: Result<void, Error>): void {
-      clearTimeout(limit)
-      chrome.tabs.onUpdated.removeListener(onTabUpdated)
-      chrome.tabs.onRemoved.removeListener(closed)
-      resolve(result)
-    }
+  while (Date.now() < deadline) {
+    const answered = await attempt(
+      chrome.tabs.sendMessage<PageCommand, void>(tabId, { type: "ping" })
+    )
 
-    function onTabUpdated(updatedId: number, change: chrome.tabs.OnUpdatedInfo): void {
-      if (updatedId === tabId && change.status === "complete") settle(ok(undefined))
-    }
+    if (answered._tag === "ok") return answered
 
-    function closed(removedId: number): void {
-      if (removedId === tabId) settle(err(new Error("its tab was closed")))
-    }
+    const found = await attempt(chrome.tabs.get(tabId))
 
-    chrome.tabs.onUpdated.addListener(onTabUpdated)
-    chrome.tabs.onRemoved.addListener(closed)
+    if (found._tag === "err") return err(new Error("its tab was closed"))
 
-    // The tab can finish loading before the listeners are added. Settling twice is harmless.
-    void attempt(chrome.tabs.get(tabId)).then((found) => {
-      if (found._tag === "ok" && found.value.status === "complete") settle(ok(undefined))
-    })
-  })
+    await new Promise((resolve) => setTimeout(resolve, PAGE_SCRIPT_POLL_MS))
+  }
+
+  return err(new Error("it took too long"))
 }
 
 async function enterPickMode(tabId: number): Promise<void> {
@@ -226,6 +226,12 @@ async function screenshot(input: {
   const { debuggee, tabId, measure } = input
 
   if (measure.type === "measure-post") {
+    // The debugger is attached as soon as the tab opens, so the banner's resize happens while
+    // X loads rather than holding up the measuring.
+    const running = await pageScriptRunning(tabId)
+
+    if (running._tag === "err") return failed("load the Post's status page", running.error)
+
     // Keep the status page rendering without selecting its tab or moving the user's focus.
     const focused = await withinCaptureLimit(
       chrome.debugger.sendCommand(debuggee, "Emulation.setFocusEmulationEnabled", { enabled: true })
@@ -243,7 +249,15 @@ async function screenshot(input: {
   // Attaching shows the "started debugging this browser" banner, which shrinks the viewport.
   // The page measures only once that resize is over: capturing while the page is still
   // resizing produces repeated tiles instead of the Target.
-  const measured = await attempt(chrome.tabs.sendMessage<PageCommand, Measurement>(tabId, measure))
+  const measuring = attempt(chrome.tabs.sendMessage<PageCommand, Measurement>(tabId, measure))
+
+  // A background tab that was never shown draws nothing until a screenshot asks it to, and
+  // starting to draw takes seconds. Tiny screenshots while the page measures start it early,
+  // so the real screenshot doesn't wait for that. They aren't awaited: once the page stops
+  // changing, a screenshot can wait for a frame that only the real screenshot's resize draws.
+  if (measure.type === "measure-post") void startRendering(debuggee, measuring)
+
+  const measured = await measuring
 
   if (measured._tag === "err") return failed("measure the Target", measured.error)
 
@@ -292,6 +306,38 @@ async function screenshot(input: {
 
       return { _tag: "captured", pngBase64: data, warnings }
     }
+  }
+}
+
+/**
+ * Take one-pixel screenshots, one after another, until the tab draws them quickly or `until`
+ * settles.
+ */
+async function startRendering(
+  debuggee: chrome.debugger.Debuggee,
+  until: Promise<unknown>
+): Promise<void> {
+  let settled = false
+  let quick = 0
+  void until.finally(() => {
+    settled = true
+  })
+
+  while (!settled && quick < RENDERING_QUICK_SHOTS) {
+    const started = performance.now()
+
+    const drawn = await withinCaptureLimit(
+      chrome.debugger.sendCommand(debuggee, "Page.captureScreenshot", {
+        format: "png",
+        clip: { x: 0, y: 0, width: 1, height: 1, scale: 1 },
+      })
+    )
+
+    const took = performance.now() - started
+
+    if (drawn._tag === "err") return
+
+    quick = took < RENDERING_QUICK_MS ? quick + 1 : 0
   }
 }
 

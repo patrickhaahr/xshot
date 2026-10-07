@@ -138,7 +138,7 @@ export function showRefusal(refusal: CaptureRefusal): void {
 
       return
     case "post-not-shown":
-      show([text("Couldn't find this Post on its status page.")])
+      show([text("Couldn't find this Post on the page.")])
 
       return
     default:

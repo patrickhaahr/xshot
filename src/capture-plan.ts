@@ -11,6 +11,7 @@ import {
   postContaining,
   postRefOf,
   showMoreIn,
+  showsReplyingTo,
 } from "./x-markup"
 import type { PostRef } from "./x-markup"
 
@@ -30,12 +31,26 @@ export type CaptureStart =
       readonly element: Element
     }
   | PostCaptureStart
+  | ConversationOfOneStart
 
 /**
- * A Post Capture: the Post the user right-clicked. It is plain data, because the Capture is
- * planned on that Post's own status page, not on the page that was right-clicked.
+ * A Post Capture: the Post the user right-clicked, planned as the Focal post of the page it is
+ * captured on. It is plain data, so it can travel to the Post's own status page; when the
+ * right-clicked page is that status page, it is planned there instead.
  */
 export type PostCaptureStart = { readonly _tag: "post"; readonly post: PostRef }
+
+/**
+ * A Post Capture of a Post that is a Conversation of one, planned on the page it was
+ * right-clicked on: it is neither a Reply nor Truncated, so it shows there as on its status page.
+ */
+export type ConversationOfOneStart = {
+  readonly _tag: "conversation-of-one"
+  readonly post: PostRef
+
+  /** The right-clicked Post. */
+  readonly element: Element
+}
 
 /** Where the user asked for the Capture to go. */
 export type Destination = "clipboard" | "download"
@@ -77,7 +92,7 @@ export type Layout = {
 export type CapturePlan = {
   /**
    * What the Capture shows, top to bottom: the picked element, or the Conversation from its
-   * root Post down to the Focal post.
+   * root Post down to the Focal post or the Post that is a Conversation of one.
    */
   readonly target: Target
 
@@ -134,7 +149,10 @@ export type CaptureRefusal =
   | { readonly _tag: "oversized" }
   /** A Post Capture was started somewhere that isn't a Post. */
   | { readonly _tag: "no-post" }
-  /** The clicked Post's status page doesn't show it as its Focal post, so it can't be captured. */
+  /**
+   * The page a Post Capture is measured on doesn't show the clicked Post, or not as its Focal
+   * post, so it can't be captured.
+   */
   | { readonly _tag: "post-not-shown" }
 
 /** Every Capture has two image pixels per CSS pixel, whatever the screen's pixel ratio. */
@@ -163,9 +181,63 @@ export function startPostCapture(clicked: Element): Result<PostCaptureStart, Cap
   return ok({ _tag: "post", post: ref })
 }
 
+/**
+ * Where a Post Capture is measured. A page that already shows the right-clicked Post's whole
+ * Conversation as its status page would is captured in place; otherwise the Post's status page
+ * is opened in a background tab.
+ */
+export type PostCaptureSite =
+  /** The right-clicked page shows the whole Conversation, so it is captured there. */
+  | { readonly _tag: "in-place"; readonly start: PostCaptureStart | ConversationOfOneStart }
+  /** Only the Post's own status page shows its Conversation in full. */
+  | { readonly _tag: "status-page"; readonly start: PostCaptureStart }
+
+/**
+ * Start a Post Capture from the element under a right-click, and decide where it is measured.
+ * The Focal post of the status page the user is on is captured in place, and so is a Post
+ * elsewhere that is neither a Reply nor Truncated, its Conversation being just itself. Any other
+ * Post Capture needs the status page: the Posts above a Reply aren't on this page, and a
+ * Truncated Post in a timeline expands only on its status page.
+ *
+ * @param clicked - The element the user right-clicked.
+ * @returns Where to capture the clicked Post, or "no-post" when the element isn't part of a Post.
+ */
+export function postCaptureSite(clicked: Element): Result<PostCaptureSite, CaptureRefusal> {
+  const started = startPostCapture(clicked)
+  const post = postContaining(clicked)
+
+  if (started._tag === "err") return started
+
+  if (post === null) return err({ _tag: "no-post" })
+
+  const start = started.value
+  const focal = focalPost(post.ownerDocument)
+
+  if (focal === post) return ok({ _tag: "in-place", start })
+
+  // On a status page, every other Post is in the Focal post's Conversation or below it, where
+  // X shows a Reply without marking it as one.
+  if (focal !== null || isReply(post) || showMoreIn([post]).length > 0) {
+    return ok({ _tag: "status-page", start })
+  }
+
+  return ok({
+    _tag: "in-place",
+    start: { _tag: "conversation-of-one", post: start.post, element: post },
+  })
+}
+
+/** Whether X marks a Post outside a status page as a Reply, with a line or a "Replying to" line. */
+function isReply(post: Element): boolean {
+  return continuesFromAbove(post) || showsReplyingTo(post)
+}
+
 /** What a Capture is planned from: the request, and the page it is taken on as rendered now. */
 export type PlanInput = CaptureRequest & {
-  /** The page being captured. For a Post Capture, the clicked Post's own status page. */
+  /**
+   * The page being captured. For a Post Capture, the clicked Post's own status page, or the
+   * right-clicked page when it is captured in place.
+   */
   readonly page: Document
 
   /** The address of the page being captured. */
@@ -204,14 +276,14 @@ export function planCapture(input: PlanInput): Result<CapturePlan, CaptureRefusa
       height: bounds.height,
     },
     destination: planDestination(input),
-    expand: input.start._tag === "post" ? showMoreIn(target) : [],
+    expand: input.start._tag === "pick" ? [] : showMoreIn(target),
     warnings: warningsOf(input, target),
   })
 }
 
 /**
- * What the Capture shows: the picked element, or the Conversation ending at the Focal post of
- * the clicked Post's status page.
+ * What the Capture shows: the picked element, the Conversation ending at the Focal post of the
+ * page it is captured on, or the right-clicked Post that is a Conversation of one.
  */
 function targetOf(input: PlanInput): Result<Target, CaptureRefusal> {
   const { page, start } = input
@@ -228,6 +300,17 @@ function targetOf(input: PlanInput): Result<Target, CaptureRefusal> {
       }
 
       return ok(conversationOf(focal))
+    }
+
+    case "conversation-of-one": {
+      const { element } = start
+
+      // X's lists can replace a Post's element, or reuse it for another Post, as they re-render.
+      if (!element.isConnected || postRefOf(element)?.postId !== start.post.postId) {
+        return err({ _tag: "post-not-shown" })
+      }
+
+      return ok([element])
     }
   }
 }
@@ -292,6 +375,7 @@ function downloadFilename(input: PlanInput): string {
     case "pick":
       return `xshot-${site(input.url)}-${timestamp(input.now)}.png`
     case "post":
+    case "conversation-of-one":
       return `xshot-${start.post.handle}-${start.post.postId}.png`
   }
 }

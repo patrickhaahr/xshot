@@ -13,9 +13,14 @@ import type {
 
 /** A command the background worker sends to the page script. */
 export type PageCommand =
+  /** Answered as soon as the page script runs, so the worker knows a new tab can take commands. */
+  | { readonly type: "ping" }
   /** The toolbar button was clicked. */
   | { readonly type: "enter-pick-mode" }
-  /** The debugger is attached: wait for the viewport to settle, then measure the picked Target. */
+  /**
+   * The debugger is attached: wait for the viewport to settle, then measure the Target on this
+   * page, picked or a Post Capture's Conversation captured in place.
+   */
   | { readonly type: "measure" }
   /** A Post Capture was chosen from the right-click menu: start it from the right-clicked element. */
   | { readonly type: "start-post-capture"; readonly destination: Destination }
@@ -47,7 +52,7 @@ export type Measurement =
 
 /** A request the page script sends to the background worker. */
 export type WorkerRequest =
-  /** Capture the Target picked on the sending page. */
+  /** Capture a Target on the sending page: a picked one, or a Post Capture captured in place. */
   | { readonly type: "capture" }
   /** Capture a Post from its own status page, opened in a background tab. */
   | ({ readonly type: "capture-post" } & PostCaptureRequest)

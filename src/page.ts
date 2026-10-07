@@ -1,4 +1,4 @@
-import { planCapture, startPostCapture } from "./capture-plan"
+import { planCapture, postCaptureSite } from "./capture-plan"
 import type { CaptureRequest, Destination, Layout, Rect, Target } from "./capture-plan"
 import { dismissConfirmation, showConfirmation, showFailure, showRefusal } from "./confirmation"
 import type { CaptureResponse, Measurement, PageCommand, WorkerRequest } from "./messages"
@@ -52,6 +52,10 @@ chrome.runtime.onMessage.addListener(
     sendResponse: (measurement?: Measurement) => void
   ) => {
     switch (command.type) {
+      case "ping":
+        sendResponse()
+
+        return false
       case "enter-pick-mode":
         // The acknowledgement tells the worker this script is already loaded.
         sendResponse()
@@ -96,24 +100,34 @@ async function captureFromPickMode(): Promise<void> {
 }
 
 /**
- * Start a Post Capture of the right-clicked Post. The worker captures it in a background tab,
- * so this page only delivers the image and shows the Confirmation.
+ * Start a Post Capture of the right-clicked Post. When this page shows its whole Conversation,
+ * it is captured here; otherwise the worker captures it in a background tab, and this page
+ * only delivers the image and shows the Confirmation.
  */
 async function postCapture(destination: Destination): Promise<void> {
   dismissConfirmation()
 
-  const started = rightClicked === null ? null : startPostCapture(rightClicked)
+  const site = rightClicked === null ? null : postCaptureSite(rightClicked)
 
   // Injection after a menu click cannot recover the contextmenu event it missed.
-  if (started === null)
+  if (site === null)
     return showFailure("XShot is now loaded. Right-click the Post again to capture it.")
 
-  if (started._tag === "err") return showRefusal(started.error)
+  if (site._tag === "err") return showRefusal(site.error)
 
-  await deliver({
-    destination,
-    response: requestCapture({ type: "capture-post", start: started.value, destination }),
-  })
+  switch (site.value._tag) {
+    case "in-place": {
+      const request = { start: site.value.start, destination }
+
+      return deliver({ destination, response: captureHere(() => measurePostHere(request)) })
+    }
+
+    case "status-page":
+      return deliver({
+        destination,
+        response: requestCapture({ type: "capture-post", start: site.value.start, destination }),
+      })
+  }
 }
 
 /** Deliver a Capture the worker is taking to its Destination, then show the Confirmation. */
@@ -187,11 +201,22 @@ function pngOf(response: CaptureResponse): Blob {
   return pngFromBase64(response.pngBase64)
 }
 
+function capturePicked(picked: Picked): Promise<CaptureResponse> {
+  return captureHere(() =>
+    measureWhenSettled({
+      start: { _tag: "pick", element: picked.target },
+      destination: picked.destination,
+    })
+  )
+}
+
 /**
- * Ask the worker to capture the picked Target, measuring it when the worker is ready. The
+ * Ask the worker to capture a Target on this page, measuring it when the worker is ready. The
  * page is put back as it was once the worker has captured it.
+ *
+ * @param measure - Measures the Target once the worker has attached the debugger.
  */
-async function capturePicked(picked: Picked): Promise<CaptureResponse> {
+async function captureHere(measure: () => Promise<Measured>): Promise<CaptureResponse> {
   let restore = (): void => {}
 
   function answerMeasure(
@@ -201,10 +226,7 @@ async function capturePicked(picked: Picked): Promise<CaptureResponse> {
   ): boolean {
     if (command.type !== "measure") return false
 
-    void measureWhenSettled({
-      start: { _tag: "pick", element: picked.target },
-      destination: picked.destination,
-    }).then((measured) => {
+    void measure().then((measured) => {
       restore = measured.restore
       sendResponse(measured.measurement)
     })
@@ -242,29 +264,52 @@ async function requestCapture(request: WorkerRequest): Promise<CaptureResponse> 
 async function measurePostWhenRendered(
   command: Extract<PageCommand, { readonly type: "measure-post" }>
 ): Promise<Measurement> {
-  const input = command
   await observedUntil(() => focalPost(document) !== null, FOCAL_POST_LIMIT_MS)
 
-  if (focalPost(document) !== null) {
-    await scrollToRootPost()
-
-    // Found again, because X renders other cells, and can render the Focal post anew, as the
-    // page scrolls.
-    const focal = focalPost(document)
-
-    await expandTruncatedText(input)
-
-    const expandedFocal = focalPost(document) ?? focal
-    await Promise.all(
-      (expandedFocal === null ? [] : conversationOf(expandedFocal)).map(imagesLoaded)
-    )
-  }
+  if (focalPost(document) !== null) await showConversation(command)
 
   // Planned again: Truncated text that didn't expand is still listed and makes a Partial Capture.
   // The page isn't put back: the worker closes this background tab after capturing.
-  const { measurement } = await measureWhenSettled(input)
+  const { measurement } = await measureWhenSettled(command)
 
   return measurement
+}
+
+/**
+ * Measure a Post Capture on the page it was right-clicked on, which already shows its
+ * Conversation. Restoring also scrolls the page back to where the user left it, after the
+ * scroll to the root Post or X's own scrolling as the Clutter left the layout. Expanded
+ * Truncated text stays expanded, as when the user clicks "Show more".
+ */
+async function measurePostHere(input: CaptureRequest): Promise<Measured> {
+  const { scrollX, scrollY } = window
+  await showConversation(input)
+
+  const measured = await measureWhenSettled(input)
+
+  return {
+    measurement: measured.measurement,
+    restore: () => {
+      measured.restore()
+      window.scrollTo(scrollX, scrollY)
+    },
+  }
+}
+
+/**
+ * Show a Post Capture's whole Conversation: from its root Post, for a Focal post, with the
+ * Truncated text expanded and the images loaded.
+ */
+async function showConversation(input: CaptureRequest): Promise<void> {
+  if (input.start._tag === "post") await scrollToRootPost()
+
+  await expandTruncatedText(input)
+
+  // Planned again, because X renders other cells, and can render the Focal post anew, as the
+  // page scrolls and expands.
+  const planned = planOnPage(input, UNMEASURED)
+
+  if (planned._tag === "ok") await Promise.all(planned.value.target.map(imagesLoaded))
 }
 
 /**
