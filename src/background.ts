@@ -1,4 +1,4 @@
-import { CAPTURE_SCALE } from "./capture-plan"
+import { CAPTURE_SCALE, MAX_IMAGE_HEIGHT } from "./capture-plan"
 import type { Destination } from "./capture-plan"
 import type { CaptureResponse, Measurement, PageCommand, WorkerRequest } from "./messages"
 import { attempt, err, ok } from "./prelude"
@@ -70,7 +70,11 @@ chrome.runtime.onMessage.addListener(
 
     switch (request.type) {
       case "capture":
-        void capture(tab.id, { type: "measure" }).then(sendResponse)
+        void capture({
+          tabId: tab.id,
+          measure: { type: "measure" },
+          conversation: request.conversation,
+        }).then(sendResponse)
         break
       case "capture-post":
         void captureFromStatusPage(request, tab).then(sendResponse)
@@ -124,10 +128,10 @@ async function captureFromStatusPage(
   try {
     // Captured as soon as the tab exists: the page script starts with the page and waits for X
     // to render the Post itself, so X's load event, seconds later, doesn't matter.
-    return await capture(tabId, {
-      type: "measure-post",
-      start: request.start,
-      destination: request.destination,
+    return await capture({
+      tabId,
+      measure: { type: "measure-post", start: request.start, destination: request.destination },
+      conversation: true,
     })
   } finally {
     await attempt(chrome.tabs.remove(tabId))
@@ -198,20 +202,23 @@ async function showUnavailablePage(tabId: number, error: Error): Promise<void> {
 /**
  * Screenshot a tab's Target, which the page measures when it receives `measure`.
  *
- * @param tabId - The tab to capture.
- * @param measure - The command that makes the page measure its Target.
+ * @param input.tabId - The tab to capture.
+ * @param input.measure - The command that makes the page measure its Target.
+ * @param input.conversation - Whether the Target is the Conversation above a Focal post.
  */
-async function capture(
-  tabId: number,
-  measure: Extract<PageCommand, { readonly type: "measure" | "measure-post" }>
-): Promise<CaptureResponse> {
+async function capture(input: {
+  readonly tabId: number
+  readonly measure: Extract<PageCommand, { readonly type: "measure" | "measure-post" }>
+  readonly conversation: boolean
+}): Promise<CaptureResponse> {
+  const { tabId, measure, conversation } = input
   const debuggee = { tabId }
   const attached = await attempt(chrome.debugger.attach(debuggee, "1.3"))
 
   if (attached._tag === "err") return failed("attach the debugger", attached.error)
 
   try {
-    return await screenshot({ debuggee, tabId, measure })
+    return await screenshot({ debuggee, tabId, measure, conversation })
   } finally {
     // Fails harmlessly when the user already detached from the "started debugging" banner.
     await attempt(chrome.debugger.detach(debuggee))
@@ -222,8 +229,9 @@ async function screenshot(input: {
   readonly debuggee: chrome.debugger.Debuggee
   readonly tabId: number
   readonly measure: PageCommand
+  readonly conversation: boolean
 }): Promise<CaptureResponse> {
-  const { debuggee, tabId, measure } = input
+  const { debuggee, tabId, measure, conversation } = input
 
   if (measure.type === "measure-post") {
     // The debugger is attached as soon as the tab opens, so the banner's resize happens while
@@ -246,6 +254,18 @@ async function screenshot(input: {
     if (active._tag === "err") return failed("activate background rendering", active.error)
   }
 
+  const zoomed = await pageZoom(debuggee)
+
+  if (zoomed._tag === "err") return failed("read the page's zoom", zoomed.error)
+
+  const zoom = zoomed.value
+
+  if (conversation) {
+    const tall = await renderTallestTarget(debuggee, zoom)
+
+    if (tall._tag === "err") return failed("enlarge the viewport", tall.error)
+  }
+
   // Attaching shows the "started debugging this browser" banner, which shrinks the viewport.
   // The page measures only once that resize is over: capturing while the page is still
   // resizing produces repeated tiles instead of the Target.
@@ -264,12 +284,6 @@ async function screenshot(input: {
   if (measured.value._tag === "refused") return measured.value
 
   const { crop, devicePixelRatio, destination, warnings } = measured.value
-
-  const zoomed = await pageZoom(debuggee)
-
-  if (zoomed._tag === "err") return failed("read the page's zoom", zoomed.error)
-
-  const zoom = zoomed.value
 
   const shot = await withinCaptureLimit(
     chrome.debugger.sendCommand(debuggee, "Page.captureScreenshot", {
@@ -391,6 +405,28 @@ function downloadFinished(downloadId: number): Promise<Result<void, Error>> {
       }
     })
   })
+}
+
+/**
+ * Make the viewport as tall as the tallest Target that isn't Oversized, until the debugger
+ * detaches. X renders only the Posts near the viewport, so in a Conversation taller than the
+ * screen the Posts above the Focal post, or the Focal post itself once the page scrolls to the
+ * root Post, would be missing; in a viewport this tall every Post of a Conversation that fits
+ * in one image stays rendered. The override is in zoomed pixels, and a width of 0 keeps the
+ * tab's own width.
+ */
+function renderTallestTarget(
+  debuggee: chrome.debugger.Debuggee,
+  zoom: number
+): Promise<Result<unknown, Error>> {
+  return withinCaptureLimit(
+    chrome.debugger.sendCommand(debuggee, "Emulation.setDeviceMetricsOverride", {
+      width: 0,
+      height: Math.ceil((MAX_IMAGE_HEIGHT / CAPTURE_SCALE) * zoom),
+      deviceScaleFactor: 0,
+      mobile: false,
+    })
+  )
 }
 
 /** The browser zoom of the debugged page, such as 1.5 at 150%. */

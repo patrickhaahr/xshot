@@ -15,4 +15,4 @@ An in-place Post Capture uses the Pick Capture's path (the page measures when th
 - A Post captured in place in a timeline looks as the timeline shows it, not as a Focal post: the relative time ("2h") instead of the full date and view count, and the timeline's tighter layout. Its content and Clutter removal are the same. A Focal post captured in place is the same image as one captured in the background tab.
 
 - A timeline Reply is recognised by X's line from the Post above or its "Replying to" line. The latter has no test id and is translated, so it is matched by its structure (an "@handle" profile link outside the Post's author, text and quoted post). A Reply it misses is captured alone, without the Posts above it.
-- The user sees their page briefly change during an in-place Capture (the scrollbar and Clutter disappear, a Focal post's page scrolls to the root), as with a Pick Capture.
+- The user sees their page briefly change during an in-place Capture (the scrollbar and Clutter disappear, a Focal post's page grows as tall as the tallest image a Capture allows, so X keeps its whole Conversation rendered, and scrolls to the root), as with a Pick Capture.

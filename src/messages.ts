@@ -53,7 +53,12 @@ export type Measurement =
 /** A request the page script sends to the background worker. */
 export type WorkerRequest =
   /** Capture a Target on the sending page: a picked one, or a Post Capture captured in place. */
-  | { readonly type: "capture" }
+  | {
+      readonly type: "capture"
+
+      /** The Target is the Conversation above a Focal post, which X renders only near the viewport. */
+      readonly conversation: boolean
+    }
   /** Capture a Post from its own status page, opened in a background tab. */
   | ({ readonly type: "capture-post" } & PostCaptureRequest)
 

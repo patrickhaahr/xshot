@@ -162,7 +162,7 @@ export const CAPTURE_SCALE = 2
  * The tallest image Chromium produces, its maximum texture size. Above it the screenshot
  * repeats content instead of failing, so a taller Target is refused rather than captured.
  */
-const MAX_IMAGE_HEIGHT = 16_384
+export const MAX_IMAGE_HEIGHT = 16_384
 
 /**
  * Start a Post Capture from the element under a right-click. Inside a quoted post, the Post

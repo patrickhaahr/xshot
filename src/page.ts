@@ -119,7 +119,13 @@ async function postCapture(destination: Destination): Promise<void> {
     case "in-place": {
       const request = { start: site.value.start, destination }
 
-      return deliver({ destination, response: captureHere(() => measurePostHere(request)) })
+      return deliver({
+        destination,
+        response: captureHere({
+          conversation: request.start._tag === "post",
+          measure: () => measurePostHere(request),
+        }),
+      })
     }
 
     case "status-page":
@@ -202,21 +208,28 @@ function pngOf(response: CaptureResponse): Blob {
 }
 
 function capturePicked(picked: Picked): Promise<CaptureResponse> {
-  return captureHere(() =>
-    measureWhenSettled({
-      start: { _tag: "pick", element: picked.target },
-      destination: picked.destination,
-    })
-  )
+  return captureHere({
+    conversation: false,
+    measure: () =>
+      measureWhenSettled({
+        start: { _tag: "pick", element: picked.target },
+        destination: picked.destination,
+      }),
+  })
 }
 
 /**
  * Ask the worker to capture a Target on this page, measuring it when the worker is ready. The
  * page is put back as it was once the worker has captured it.
  *
- * @param measure - Measures the Target once the worker has attached the debugger.
+ * @param input.conversation - Whether the Target is the Conversation above a Focal post.
+ * @param input.measure - Measures the Target once the worker has attached the debugger.
  */
-async function captureHere(measure: () => Promise<Measured>): Promise<CaptureResponse> {
+async function captureHere(input: {
+  readonly conversation: boolean
+  readonly measure: () => Promise<Measured>
+}): Promise<CaptureResponse> {
+  const { conversation, measure } = input
   let restore = (): void => {}
 
   function answerMeasure(
@@ -237,7 +250,7 @@ async function captureHere(measure: () => Promise<Measured>): Promise<CaptureRes
   chrome.runtime.onMessage.addListener(answerMeasure)
 
   try {
-    return await requestCapture({ type: "capture" })
+    return await requestCapture({ type: "capture", conversation })
   } finally {
     chrome.runtime.onMessage.removeListener(answerMeasure)
     restore()
@@ -319,6 +332,10 @@ async function showConversation(input: CaptureRequest): Promise<void> {
  * missing until the page scrolls up to them.
  */
 async function scrollToRootPost(): Promise<void> {
+  // The worker makes the viewport tall enough for X to keep the whole Conversation rendered;
+  // at the top of a viewport still the screen's height, X would drop the Focal post.
+  await viewportSettled()
+
   const { scrollX, scrollY } = window
   window.scrollTo(0, 0)
 
